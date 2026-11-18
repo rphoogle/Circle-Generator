@@ -557,7 +557,7 @@ impl App {
             } else {
                 format!("M ({} bricks / {} plates)", fmt_num(self.height as f64 / 6.0), fmt_num(self.height as f64 / 2.0))
             };
-            let (hmax, htype) = if stud { (60, 2000) } else { (120, 4000) };
+            let (hmax, htype) = if stud { (2000, 2000) } else { (4000, 4000) }; // tallest single brick
             size_row(ui, "Height", &mut self.height, 1, hmax, htype, h_note, true);
             let inv_solid = self.kind == Kind::Solid && self.inverse;
             let w_note = if stud {
