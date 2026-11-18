@@ -65,19 +65,46 @@ pub struct Built {
 pub fn validate(s: &Settings) -> Result<(), String> {
     let l = &s.layout;
     let unit = if s.style.is_stud() { "studs" } else { "micro bricks" };
-    if l.diameter < 2 {
-        return Err(format!("The diameter must be at least 2 {unit}."));
+    let one = if s.style.is_stud() { "stud" } else { "micro brick" };
+    if l.width < 2 || l.length < 2 {
+        return Err(format!("The size must be at least 2 {unit}."));
     }
-    if l.shape != Shape::Full && l.diameter % 2 != 0 {
-        return Err(format!(
-            "Half and quarter circles need an even diameter, because the cut runs through the centre and \
-             an odd size would mean cutting a brick in half. Try {} or {} {unit}.",
-            l.diameter - 1,
-            l.diameter + 1
-        ));
+    let even = |v: i32| v % 2 == 0;
+    match l.shape {
+        Shape::Full => {}
+        Shape::Half => {
+            if !even(l.length) {
+                return Err(format!(
+                    "Half shapes need an even {}, because the cut runs through the centre and an odd size \
+                     would mean cutting a brick in half. Try {} or {} {unit}.",
+                    if l.width == l.length { "diameter" } else { "length" },
+                    l.length - 1,
+                    l.length + 1
+                ));
+            }
+        }
+        Shape::Quarter => {
+            if !even(l.length) || !even(l.width) {
+                return Err(format!(
+                    "Quarter shapes need even sizes, because the cuts run through the centre and an odd size \
+                     would mean cutting a brick in half."
+                ));
+            }
+        }
     }
-    if l.kind == Kind::Solid && l.inverse && l.wall < 1 {
-        return Err(format!("The wall must be at least 1 {}.", if s.style.is_stud() { "stud" } else { "micro brick" }));
+    if l.kind == Kind::Ring {
+        if l.hole_w < 2 || l.hole_l < 2 {
+            return Err(format!("The hole must be at least 2 {unit} across."));
+        }
+        if l.hole_w >= l.width || l.hole_l >= l.length {
+            return Err("The band must be at least 1 thick.".into());
+        }
+        if (l.width - l.hole_w) % 2 != 0 || (l.length - l.hole_l) % 2 != 0 {
+            return Err("internal: the band must be the same thickness on both sides.".into());
+        }
+    }
+    if l.inverse && l.kind != Kind::Hollow && l.wall < 1 {
+        return Err(format!("The wall must be at least 1 {one}."));
     }
     if s.height < 1 {
         return Err("The height must be at least 1.".into());
@@ -91,7 +118,7 @@ pub fn validate(s: &Settings) -> Result<(), String> {
 
 pub fn build(s: &Settings) -> Result<Built, String> {
     validate(s)?;
-    let pieces = geometry::layout(&s.layout);
+    let pieces = geometry::layout(&s.layout)?;
     let u = s.style.unit();
     let half_z = if s.style.is_stud() { 2 * s.height } else { s.height };
     let max_len = (2 * MAX_HALF / u) / 2 * 2; // longest brick in half-cells, kept even

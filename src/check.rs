@@ -3,6 +3,7 @@
 
 use crate::geometry::{arc, Kind, Layout, Piece, Shape};
 
+
 #[derive(Debug, Default)]
 pub struct Report {
     pub overlaps: usize,
@@ -39,11 +40,9 @@ pub fn check(l: &Layout, pieces: &[Piece]) -> Report {
     check_with_step(l, pieces, 0.5)
 }
 
-pub fn check_with_step(l: &Layout, pieces: &[Piece], step: f64) -> Report {
-    let d = l.diameter;
-    let a = arc(d);
-    // full outline, anticlockwise
-    let mut outline: Vec<(f64, f64)> = vec![];
+fn outline(w: i32, l: i32) -> Vec<(f64, f64)> {
+    let a = arc(w, l);
+    let mut out: Vec<(f64, f64)> = vec![];
     for (sx, sy, rev) in [(1, 1, false), (-1, 1, true), (-1, -1, false), (1, -1, true)] {
         let mut q: Vec<(i32, i32)> = a.clone();
         if rev {
@@ -51,13 +50,21 @@ pub fn check_with_step(l: &Layout, pieces: &[Piece], step: f64) -> Report {
         }
         for (x, y) in q {
             let p = ((sx * x) as f64, (sy * y) as f64);
-            if outline.last() != Some(&p) {
-                outline.push(p);
+            if out.last() != Some(&p) {
+                out.push(p);
             }
         }
     }
-    let s = d + 2 * l.wall;
-    let ext = s + 4;
+    out
+}
+
+pub fn check_with_step(l: &Layout, pieces: &[Piece], step: f64) -> Report {
+    let outer = outline(l.width, l.length);
+    // for doughnuts, the inner outline is whatever the pieces actually use
+    // (wedges may have been split smaller); checked separately via overlaps.
+    let hole = if l.kind == Kind::Ring { Some(outline(l.hole_w, l.hole_l)) } else { None };
+    let (sw, sl) = (l.width + 2 * l.wall, l.length + 2 * l.wall);
+    let ext = sw.max(sl) + 4;
     let in_part = |x: f64, y: f64| match l.shape {
         Shape::Full => true,
         Shape::Half => y > 0.0,
@@ -104,14 +111,35 @@ pub fn check_with_step(l: &Layout, pieces: &[Piece], step: f64) -> Report {
             if c > 1 {
                 r.overlaps += 1;
             }
-            let disc = inside_convex(&outline, x, y);
-            let in_sq = x.abs() < s as f64 && y.abs() < s as f64;
+            let disc = inside_convex(&outer, x, y);
+            let in_sq = x.abs() < sw as f64 && y.abs() < sl as f64;
+            let near = |p: &Vec<(f64, f64)>| {
+                // within 1.2 cells of an outline: refined edges may differ slightly from the convex one
+                let n = p.len();
+                (0..n).any(|i| {
+                    let (x0, y0) = p[i];
+                    let (x1, y1) = p[(i + 1) % n];
+                    let (dx, dy) = (x1 - x0, y1 - y0);
+                    let t = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
+                    ((x - x0 - t * dx).hypot(y - y0 - t * dy)) < 2.4
+                })
+            };
             let want: Option<bool> = match (l.kind, l.inverse) {
                 (Kind::Solid, false) => Some(disc && in_part(x, y)),
                 (Kind::Solid, true) => Some(!disc && in_sq && in_part(x, y)),
-                // rings: only check nothing spills where it shouldn't
                 (Kind::Hollow, false) => if !disc || !in_part(x, y) { Some(false) } else { None },
-                (Kind::Hollow, true) => if disc || !in_part(x, y) || x.abs() > (d + 2) as f64 || y.abs() > (d + 2) as f64 { Some(false) } else { None },
+                (Kind::Hollow, true) => if disc || !in_part(x, y) || x.abs() > (l.width + 2) as f64 || y.abs() > (l.length + 2) as f64 { Some(false) } else { None },
+                (Kind::Ring, false) => {
+                    let h = hole.as_ref().unwrap();
+                    let in_hole = inside_convex(h, x, y);
+                    if near(&outer) || near(h) { None }
+                    else if !in_part(x, y) || !disc { Some(false) }
+                    else { Some(!in_hole) }
+                }
+                (Kind::Ring, true) => {
+                    let h = hole.as_ref().unwrap();
+                    Some(in_part(x, y) && ((!disc && in_sq) || inside_convex(h, x, y)))
+                }
             };
             match want {
                 Some(true) if c == 0 => r.gaps += 1,

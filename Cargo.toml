@@ -1,6 +1,6 @@
 [package]
 name = "circle-generator"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Smooth circles for Brickadia, saved as prefabs"
 license = "MIT"
@@ -39,3 +39,7 @@ clipboard-win = { version = "5.4.1", features = ["windows-win"] }
 opt-level = 3
 lto = "thin"
 strip = true
+
+[[bin]]
+name = "thin"
+path = "src/bin/thin.rs"

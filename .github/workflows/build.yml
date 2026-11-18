@@ -14,8 +14,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Self-test (gap / overlap check on 1,900 layouts)
-        run: cargo run --release --no-default-features --bin sweep -- 2 120 1
+      - name: Self-test (gap / overlap check on 8,000+ layouts)
+        run: cargo run --release --no-default-features --bin sweep -- 2 40 1
       - name: Build the program
         run: cargo build --release --bin CircleGenerator
       - uses: actions/upload-artifact@v4

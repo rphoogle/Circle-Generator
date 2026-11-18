@@ -48,12 +48,18 @@ struct App {
     shape: Shape,
     kind: Kind,
     inverse: bool,
-    fill_solid: Fill,
-    fill_inverse: Fill,
+    /// fill choice for: solid, solid inverse, doughnut, doughnut inverse
+    fills: [Fill; 4],
     style: BrickStyle,
-    /// diameter, height and wall in the current style's units
-    /// (micro bricks for Micro; studs / plates / studs for stud styles)
-    diameter: i32,
+    /// sizes in the current style's units (micro bricks for Micro;
+    /// studs / plates / studs for stud styles)
+    oval: bool,
+    /// width/length of the reference outline: the outside, or the hole
+    /// when a doughnut is set by its hole size
+    width: i32,
+    length: i32,
+    ring_by_hole: bool,
+    band: i32,
     height: i32,
     wall: i32,
     color: [u8; 3],
@@ -76,10 +82,13 @@ impl App {
             shape: Shape::Full,
             kind: Kind::Solid,
             inverse: false,
-            fill_solid: Fill::Blocks,
-            fill_inverse: Fill::Blocks,
+            fills: [Fill::Blocks; 4],
             style: BrickStyle::Micro,
-            diameter: 80,
+            oval: false,
+            width: 80,
+            length: 80,
+            ring_by_hole: false,
+            band: 10,
             height: 18,
             wall: 5,
             color: [255, 255, 255],
@@ -97,12 +106,28 @@ impl App {
         a
     }
 
-    fn fill(&self) -> Fill {
+    fn fill_slot(&self) -> Option<usize> {
         match (self.kind, self.inverse) {
-            (Kind::Solid, false) => self.fill_solid,
-            (Kind::Solid, true) => self.fill_inverse,
-            _ => Fill::Strips,
+            (Kind::Solid, false) => Some(0),
+            (Kind::Solid, true) => Some(1),
+            (Kind::Ring, false) => Some(2),
+            (Kind::Ring, true) => Some(3),
+            _ => None,
         }
+    }
+
+    fn fill(&self) -> Fill {
+        self.fill_slot().map_or(Fill::Strips, |i| self.fills[i])
+    }
+
+    /// (outer width, outer length, hole width, hole length) in cells
+    fn sizes(&self) -> (i32, i32, i32, i32) {
+        let (w, l) = (self.width, if self.oval { self.length } else { self.width });
+        if self.kind != Kind::Ring {
+            return (w, l, 0, 0);
+        }
+        let b = 2 * self.band;
+        if self.ring_by_hole { (w + b, l + b, w, l) } else { (w, l, w - b, l - b) }
     }
 
     fn settings(&self) -> Settings {
@@ -112,7 +137,10 @@ impl App {
                 kind: self.kind,
                 inverse: self.inverse,
                 fill: self.fill(),
-                diameter: self.diameter,
+                width: self.sizes().0,
+                length: self.sizes().1,
+                hole_w: self.sizes().2,
+                hole_l: self.sizes().3,
                 wall: self.wall,
             },
             style: self.style,
@@ -136,14 +164,18 @@ impl App {
         let ty = match (self.kind, self.inverse) {
             (Kind::Solid, false) => "Solid",
             (Kind::Hollow, false) => "Hollow",
+            (Kind::Ring, false) => "Doughnut",
             (Kind::Solid, true) => "SolidInverse",
             (Kind::Hollow, true) => "HollowInverse",
+            (Kind::Ring, true) => "DoughnutInverse",
         };
         let fill = match (self.kind, self.inverse, self.fill()) {
             (Kind::Hollow, _, _) => "",
-            (_, false, Fill::Blocks) => "_SquareCentre",
-            (_, true, Fill::Blocks) => "_CornerBlocks",
-            _ => "_Strips",
+            (_, _, Fill::Strips) => "_Strips",
+            (Kind::Solid, false, _) => if self.oval { "_RectangleCentre" } else { "_SquareCentre" },
+            (Kind::Solid, true, _) => "_CornerBlocks",
+            (Kind::Ring, false, _) => "_FourWay",
+            (Kind::Ring, true, _) => "_Blocks",
         };
         let style = match self.style {
             BrickStyle::Micro => "Micro",
@@ -151,12 +183,16 @@ impl App {
             BrickStyle::Tile => "Tile",
             BrickStyle::Smooth => "Smooth",
         };
-        let (d, h) = if self.style.is_stud() {
-            (format!("{}studs", self.diameter), format!("{}plates", self.height))
-        } else {
-            (format!("{}M", self.diameter), format!("{}M", self.height))
-        };
-        format!("Circle_{shape}_{ty}{fill}_{style}_{d}_{h}")
+        let (u, hu) = if self.style.is_stud() { ("studs", "plates") } else { ("M", "M") };
+        let (ow, ol, hw, hl) = self.sizes();
+        let size = |w: i32, l: i32| if w == l { format!("{w}{u}") } else { format!("{w}x{l}{u}") };
+        let mut d = size(ow, ol);
+        if self.kind == Kind::Ring {
+            d = format!("{d}_hole{}", size(hw, hl));
+        }
+        let h = format!("{}{hu}", self.height);
+        let base = if self.oval { "Oval" } else { "Circle" };
+        format!("{base}_{shape}_{ty}{fill}_{style}_{d}_{h}")
     }
 
     fn set_style(&mut self, s: BrickStyle) {
@@ -166,11 +202,15 @@ impl App {
         }
         if s.is_stud() {
             // micro bricks -> studs / plates
-            self.diameter = ((self.diameter as f64 / 5.0).round() as i32).max(2);
+            self.width = ((self.width as f64 / 5.0).round() as i32).max(2);
+            self.length = ((self.length as f64 / 5.0).round() as i32).max(2);
+            self.band = ((self.band as f64 / 5.0).round() as i32).max(1);
             self.height = ((self.height as f64 / 2.0).round() as i32).max(1);
             self.wall = ((self.wall as f64 / 5.0).round() as i32).max(1);
         } else {
-            self.diameter *= 5;
+            self.width *= 5;
+            self.length *= 5;
+            self.band *= 5;
             self.height *= 2;
             self.wall *= 5;
         }
@@ -186,11 +226,7 @@ impl App {
 
     fn rebuild_if_needed(&mut self) {
         let s = self.settings();
-        let key = format!(
-            "{:?}{:?}{}{:?}{}{}{:?}{}{:?}{}",
-            s.layout.shape, s.layout.kind, s.layout.inverse, s.layout.fill, s.layout.diameter, s.layout.wall,
-            s.style, s.height, s.color, s.material
-        );
+        let key = format!("{:?}{:?}{}{:?}{}{}", s.layout, s.style, s.height, s.color, s.material, self.oval);
         if key != self.key {
             self.key = key;
             self.built = Some(build(&s));
@@ -211,7 +247,7 @@ impl App {
                 return None;
             }
         };
-        let ext = (s.layout.diameter + 2 * s.layout.wall + 4) as f64;
+        let ext = (s.layout.width.max(s.layout.length) + 2 * s.layout.wall + 4) as f64;
         let step = (2.0 * ext / 1600.0).max(0.5);
         let r = check::check_with_step(&s.layout, &built.pieces, step);
         if !r.ok() {
@@ -336,8 +372,8 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 }
 
 fn label(ui: &mut egui::Ui, t: &str) {
-    ui.allocate_ui_with_layout(Vec2::new(92.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_width(92.0);
+    ui.allocate_ui_with_layout(Vec2::new(108.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_width(108.0);
         ui.label(bold(t, 13.5).color(Color32::WHITE));
     });
 }
@@ -437,7 +473,7 @@ impl eframe::App for App {
             });
 
         egui::SidePanel::left("controls")
-            .exact_width(520.0)
+            .exact_width(540.0)
             .resizable(false)
             .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin { left: 16, right: 8, top: 12, bottom: 12 }))
             .show(ctx, |ui| {
@@ -482,22 +518,27 @@ impl App {
             ui.horizontal(|ui| {
                 label(ui, "Shape");
                 seg(ui, &mut self.shape, &[(Shape::Full, "● Full"), (Shape::Half, "◓ Half"), (Shape::Quarter, "◔ Quarter")]);
+                ui.checkbox(&mut self.oval, bold("Oval", 13.5));
             });
             ui.horizontal(|ui| {
                 label(ui, "Type");
-                seg(ui, &mut self.kind, &[(Kind::Solid, "Solid"), (Kind::Hollow, "Hollow")]);
-                ui.checkbox(&mut self.inverse, bold("Inverse (hole)", 13.5));
+                seg(ui, &mut self.kind, &[(Kind::Solid, "Solid"), (Kind::Hollow, "Hollow"), (Kind::Ring, "Doughnut")]);
+                ui.checkbox(&mut self.inverse, bold("Inverse", 13.5));
             });
             ui.horizontal(|ui| {
                 label(ui, "Fill");
-                match (self.kind, self.inverse) {
-                    (Kind::Solid, false) => {
-                        seg(ui, &mut self.fill_solid, &[(Fill::Strips, "Strips"), (Fill::Blocks, "Square centre")]);
+                let centre = if self.oval { "Rectangle centre" } else { "Square centre" };
+                match self.fill_slot() {
+                    Some(i) => {
+                        let other = match i {
+                            0 => centre,
+                            1 => "Corner blocks",
+                            2 => "Four-way",
+                            _ => "Blocks",
+                        };
+                        seg(ui, &mut self.fills[i], &[(Fill::Strips, "Strips"), (Fill::Blocks, other)]);
                     }
-                    (Kind::Solid, true) => {
-                        seg(ui, &mut self.fill_inverse, &[(Fill::Strips, "Strips"), (Fill::Blocks, "Corner blocks")]);
-                    }
-                    _ => {
+                    None => {
                         ui.label(RichText::new("Hollow shapes have no filler").italics().color(SOFT));
                     }
                 }
@@ -514,41 +555,81 @@ impl App {
 
         let stud = self.style.is_stud();
         let (smax, tmax, dmin) = if stud { (SLIDER_MAX_STUD, TYPE_MAX_STUD, 2) } else { (SLIDER_MAX_MICRO, TYPE_MAX_MICRO, 6) };
+        let note = |v: f64| if stud { format!("studs ({} M)", fmt_num(v * 5.0)) } else { format!("M ({})", studs(v / 5.0)) };
+        let ring = self.kind == Kind::Ring;
         card(ui, |ui| {
-            let d_note = if stud {
-                format!("studs ({} M)", self.diameter * 5)
+            if ring {
+                ui.horizontal(|ui| {
+                    label(ui, "Set by");
+                    seg(ui, &mut self.ring_by_hole, &[(false, "Outer size"), (true, "Hole size")]);
+                });
+            }
+            let which = if !ring { "" } else if self.ring_by_hole { "Hole " } else { "Outer " };
+            if !self.oval {
+                let dlo = dmin.min(self.width.max(2));
+                let n = note(self.width as f64);
+                size_row(ui, if which == "Hole " { "Hole diameter" } else { "Diameter" }, &mut self.width, dlo, smax, tmax, n, true);
+                // radius, linked
+                ui.horizontal(|ui| {
+                    label(ui, if which == "Hole " { "Hole radius" } else { "Radius" });
+                    let mut r = self.width as f64 / 2.0;
+                    let mut sr = r.min(smax as f64 / 2.0);
+                    if ui.add(egui::Slider::new(&mut sr, (dmin as f64 / 2.0)..=(smax as f64 / 2.0)).logarithmic(true).show_value(false).step_by(0.5)).changed() {
+                        self.width = (sr * 2.0).round() as i32;
+                    }
+                    if ui.add_sized([62.0, 22.0], egui::DragValue::new(&mut r).range(1.0..=(tmax as f64 / 2.0)).speed(0.1).max_decimals(1).custom_formatter(|v, _| fmt_num(v))).changed() {
+                        self.width = (r * 2.0).round() as i32;
+                    }
+                    ui.label(RichText::new(note(self.width as f64 / 2.0)).color(Color32::from_rgb(0xd6, 0xde, 0xf0)).size(12.5));
+                });
+                ui.label(RichText::new("                              🔗 Diameter and radius are linked").size(11.5).color(Color32::from_rgb(0x9f, 0xb6, 0xdc)));
+                self.length = self.width;
             } else {
-                format!("M ({})", studs(self.diameter as f64 / 5.0))
-            };
-            let dlo = dmin.min(self.diameter.max(2));
-            size_row(ui, "Diameter", &mut self.diameter, dlo, smax, tmax, d_note, true);
-            // radius, linked
-            ui.horizontal(|ui| {
-                label(ui, "Radius");
-                let mut r = self.diameter as f64 / 2.0;
-                let mut sr = r.min(smax as f64 / 2.0);
-                if ui.add(egui::Slider::new(&mut sr, (dmin as f64 / 2.0)..=(smax as f64 / 2.0)).logarithmic(true).show_value(false).step_by(0.5)).changed() {
-                    self.diameter = (sr * 2.0).round() as i32;
+                let lo = dmin.min(self.width.max(2));
+                let n = note(self.width as f64);
+                size_row(ui, match which { "Hole " => "Hole width", "Outer " => "Outer width", _ => "Width" }, &mut self.width, lo, smax, tmax, n, true);
+                let lo = dmin.min(self.length.max(2));
+                let n = note(self.length as f64);
+                size_row(ui, match which { "Hole " => "Hole length", "Outer " => "Outer length", _ => "Length" }, &mut self.length, lo, smax, tmax, n, true);
+                ui.label(RichText::new("                              Half ovals keep the top half (swap the sizes to flip)").size(11.5).color(Color32::from_rgb(0x9f, 0xb6, 0xdc)));
+            }
+            if ring {
+                let n = if stud { format!("studs ({} M)", self.band * 5) } else { format!("M ({})", studs(self.band as f64 / 5.0)) };
+                let bmax = if stud { 200 } else { 1000 };
+                size_row(ui, "Band", &mut self.band, 1, bmax, tmax / 2, n, true);
+                let (ow, ol, hw, hl) = self.sizes();
+                let u = if stud { "studs" } else { "M" };
+                let st = |v: i32| if stud { format!("{v} studs") } else { format!("{v} M ({})", studs(v as f64 / 5.0)) };
+                let _ = u;
+                let txt = if self.ring_by_hole {
+                    if self.oval { format!("Outer size: {} × {}", st(ow), st(ol)) } else { format!("Outer diameter: {}", st(ow)) }
+                } else if self.oval {
+                    format!("Hole: {} × {}", st(hw), st(hl))
+                } else {
+                    format!("Hole diameter: {}", st(hw))
+                };
+                ui.label(RichText::new(format!("                              {txt}")).size(12.5).strong().color(Color32::WHITE));
+                if !stud && self.band < 2 {
+                    ui.label(RichText::new("A 1 M band only works at some sizes; 2 M or more always works.").size(12.0).color(WARN));
                 }
-                if ui.add_sized([62.0, 22.0], egui::DragValue::new(&mut r).range(1.0..=(tmax as f64 / 2.0)).speed(0.1).max_decimals(1).custom_formatter(|v, _| fmt_num(v))).changed() {
-                    self.diameter = (r * 2.0).round() as i32;
-                }
-                let r_now = self.diameter as f64 / 2.0;
-                let note = if stud { format!("studs ({} M)", fmt_num(r_now * 5.0)) } else { format!("M ({})", studs(r_now / 5.0)) };
-                ui.label(RichText::new(note).color(Color32::from_rgb(0xd6, 0xde, 0xf0)).size(12.5));
-            });
-            ui.label(RichText::new("                          🔗 Diameter and radius are linked").size(11.5).color(Color32::from_rgb(0x9f, 0xb6, 0xdc)));
-            if self.diameter > smax {
+            }
+            let (ow, ol, _, _) = self.sizes();
+            if ow.max(ol) > smax {
                 ui.label(RichText::new(format!("Bigger than one brick ({smax} {}), so long strips will be split into equal pieces.", self.unit())).size(12.0).color(WARN));
             }
-            if self.shape != Shape::Full && self.diameter % 2 != 0 {
-                ui.label(RichText::new("Half and quarter circles need an even diameter: the cut runs through the centre, and an odd size would mean cutting a brick in half.").size(12.0).color(WARN));
+            // halves and quarters need even sizes on the cut
+            let odd_len = self.shape != Shape::Full && self.length % 2 != 0;
+            let odd_w = self.shape == Shape::Quarter && self.width % 2 != 0;
+            if odd_len || odd_w {
+                let what = if !self.oval { "diameter" } else if odd_len && odd_w { "width and length" } else if odd_len { "length" } else { "width" };
+                ui.label(RichText::new(format!("Half and quarter shapes need an even {what}: the cut runs through the centre, and an odd size would mean cutting a brick in half.")).size(12.0).color(WARN));
                 ui.horizontal(|ui| {
-                    if ui.button(format!("Use {}", self.diameter - 1)).clicked() {
-                        self.diameter -= 1;
-                    }
-                    if ui.button(format!("Use {}", self.diameter + 1)).clicked() {
-                        self.diameter += 1;
+                    if !self.oval {
+                        if ui.button(format!("Use {}", self.width - 1)).clicked() { self.width -= 1; self.length = self.width; }
+                        if ui.button(format!("Use {}", self.width + 1)).clicked() { self.width += 1; self.length = self.width; }
+                    } else {
+                        if odd_w && ui.button(format!("Width {}", self.width + 1)).clicked() { self.width += 1; }
+                        if odd_len && ui.button(format!("Length {}", self.length + 1)).clicked() { self.length += 1; }
                     }
                 });
             }
@@ -559,7 +640,7 @@ impl App {
             };
             let (hmax, htype) = if stud { (2000, 2000) } else { (4000, 4000) }; // tallest single brick
             size_row(ui, "Height", &mut self.height, 1, hmax, htype, h_note, true);
-            let inv_solid = self.kind == Kind::Solid && self.inverse;
+            let inv_solid = self.kind != Kind::Hollow && self.inverse;
             let w_note = if stud {
                 format!("studs{}", if inv_solid { " · thinnest point" } else { " · inverse only" })
             } else {
@@ -646,8 +727,17 @@ impl App {
                             painter.add(egui::Shape::convex_polygon(pts, if p.is_wedge() { WEDGE } else { FILLER }, stroke));
                         }
                         // true circle (centre is (0,0) in layout coordinates)
-                        let o = to(0, 0);
-                        painter.circle_stroke(o, self.diameter as f32 * sc, Stroke::new(1.0_f32, TRUE_CIRCLE.gamma_multiply(0.8)));
+                        let (ow, ol, hw, hl) = self.sizes();
+                        let mut rings = vec![(ow, ol)];
+                        if self.kind == Kind::Ring { rings.push((hw, hl)); }
+                        for (rw, rl) in rings {
+                            let pts: Vec<Pos2> = (0..=96).map(|k| {
+                                let t = k as f32 / 96.0 * std::f32::consts::TAU;
+                                let p = to(0, 0);
+                                Pos2::new(p.x + rw as f32 * sc * t.cos(), p.y - rl as f32 * sc * t.sin())
+                            }).collect();
+                            painter.add(egui::Shape::line(pts, Stroke::new(1.0_f32, TRUE_CIRCLE.gamma_multiply(0.8))));
+                        }
                     }
                     Some(Err(e)) => {
                         painter.text(r.center(), egui::Align2::CENTER_CENTER, e, egui::FontId::proportional(14.0), WARN);
@@ -665,11 +755,12 @@ impl App {
         let stud = self.style.is_stud();
         let span = {
             let l = &self.settings().layout;
-            let outer = if l.inverse && l.kind == Kind::Solid { l.diameter + 2 * l.wall } else { l.diameter };
+            let extra = if l.inverse && l.kind != Kind::Hollow { 2 * l.wall } else { 0 };
+            let (ow, ol) = (l.width + extra, l.length + extra);
             let (w, h) = match l.shape {
-                Shape::Full => (outer, outer),
-                Shape::Half => (outer, outer / 2),
-                Shape::Quarter => (outer / 2, outer / 2),
+                Shape::Full => (ow, ol),
+                Shape::Half => (ow, ol / 2),
+                Shape::Quarter => (ow / 2, ol / 2),
             };
             let st = |v: i32| if stud { fmt_num(v as f64) } else { fmt_num(v as f64 / 5.0) };
             let tall = if stud { fmt_num(self.height as f64 / 3.0) } else { fmt_num(self.height as f64 / 6.0) };
