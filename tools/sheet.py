@@ -6,7 +6,7 @@ BG=(250,249,246); FILL=(222,226,236); WEDGE=(120,150,220); EDGE=(70,72,90)
 data=json.load(open(sys.argv[1]))
 W,H=420,470; cols=4; rows=(len(data)+cols-1)//cols
 out=Image.new('RGB',(W*cols,H*rows+90),BG); d=ImageDraw.Draw(out)
-d.text((W*cols/2,40),'Circle Generator – test pack (top-down)',font=fH,fill=(25,25,35),anchor='mm')
+d.text((W*cols/2,40),'Circle Generator – test pack 2 (top-down)',font=fH,fill=(25,25,35),anchor='mm')
 for i,t in enumerate(data):
     im=Image.new('RGB',(W,H),BG); g=ImageDraw.Draw(im)
     xs=[p[0] for pc in t['pieces'] for p in pc['p']]; ys=[p[1] for pc in t['pieces'] for p in pc['p']]

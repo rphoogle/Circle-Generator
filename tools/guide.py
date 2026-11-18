@@ -21,20 +21,21 @@ def tbl(rows,w):
     t=Table([[P(c,SM) for c in r] for r in rows],colWidths=w)
     t.setStyle(TableStyle([('GRID',(0,0),(-1,-1),0.4,colors.HexColor('#b9bfcc')),('BACKGROUND',(0,0),(-1,0),colors.HexColor('#e3e8f3')),('VALIGN',(0,0),(-1,-1),'TOP')]))
     return t
-s=[P('Circle Generator – user guide',H1),P('Version 0.1 · 18 November 2026'),
+s=[P('Circle Generator – user guide',H1),P('Version 0.2 · 18 November 2026'),
  Image('docs/window.png',width=174*mm,height=174*mm*800/1180),
  P('Getting the program',H2)]
 s+=bul(['On your GitHub repository, open the <b>Actions</b> tab and click the latest <b>Build Windows .exe</b> run.',
  'Under <b>Artifacts</b> at the bottom, download <b>CircleGenerator-windows</b> (a zip) and take <b>CircleGenerator.exe</b> out of it. Put it anywhere you like.',
  'The first time, Windows SmartScreen will warn you because the program is unsigned: <b>More info</b>, then <b>Run anyway</b>.'])
 s+=[P('The controls',H2), tbl([['Control','What it does'],
- ['Shape','Full ●, Half ◓ or Quarter ◔. Halves and quarters need an even diameter; the tool tells you and offers the nearest even sizes.'],
- ['Type','Solid or Hollow. Tick <b>Inverse (hole)</b> for the opposite: a smooth round hole instead of a smooth outside.'],
- ['Fill','Solid: Strips or Square centre. Solid inverse: Strips or Corner blocks. Hollow shapes have no filler.'],
+ ['Shape','Full ●, Half ◓ or Quarter ◔. Halves and quarters need even sizes on the cut; the tool tells you and offers the nearest even sizes. Tick <b>Oval</b> to set width and length separately (half ovals keep the top half: swap the sizes to flip).'],
+ ['Type','Solid, Hollow or <b>Doughnut</b> (a filled band with a hole). Tick <b>Inverse</b> for the opposite: a block with a smooth hole. An inverse doughnut is a block with a hole plus a centre disc.'],
+ ['Set by / Band','Doughnuts only: choose whether the size boxes set the outside or the hole, then set the band thickness; the other size is shown underneath. A quarter doughnut is a 90° bend, a half doughnut a U-bend. Very thin bands use smaller wedges automatically.'],
+ ['Fill','Solid: Strips or Square (rectangle) centre. Solid inverse: Strips or Corner blocks. Doughnut: Strips or Four-way (upright at the sides, flat at top and bottom). Hollow shapes have no filler.'],
  ['Brick type','Micro (Micro Wedges + micro bricks, any size in micro bricks) or Default / Tile / Smooth (Side Wedges, whole studs, heights in plates). Switching converts your sizes.'],
  ['Diameter / Radius','Linked: change either. The slider goes to 800 studs (the longest single brick); type bigger numbers in the box and long strips are split into equal pieces.'],
  ['Height','Micro: in micro bricks, with bricks and plates shown. Stud types: in plates, with bricks shown.'],
- ['Wall','Solid inverse only: the thickness at the thinnest point between the hole and the edge of the block.'],
+ ['Wall','Inverse shapes: the thickness at the thinnest point between the hole and the edge of the block.'],
  ['Colour / Material','Colour picker or hex code; Plastic, Glass, Translucent, Glow, Metallic or Hologram.'],
  ['File name','Filled in automatically from your settings. Type your own if you like; <b>↺ Use automatic name</b> puts it back.'],
  ['Save to Prefabs','Saves into %LOCALAPPDATA%\\Brickadia\\Saved\\Prefabs. Asks before replacing a file with the same name.'],
