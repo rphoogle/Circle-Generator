@@ -16,6 +16,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Self-test (gap / overlap check on 8,000+ layouts)
         run: cargo run --release --no-default-features --bin sweep -- 2 40 1
+      - name: Cone self-test (overlap / size check on 20,000+ cone layouts)
+        run: cargo run --release --no-default-features --bin conesweep -- 90
       - name: Build the program
         run: cargo build --release --bin CircleGenerator
       - uses: actions/upload-artifact@v4

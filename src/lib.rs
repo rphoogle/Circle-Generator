@@ -214,3 +214,48 @@ pub fn to_brz_bytes(s: &Settings) -> Result<(Built, Vec<u8>), String> {
 }
 
 pub mod check;
+pub mod cone;
+
+/// Shared limit for other modules.
+pub const MAX_HALF_PUB: i32 = MAX_HALF;
+
+/// Turn cone bricks into a centred prefab world.
+pub fn cone_world(bricks: &[cone::Cb], color: (u8, u8, u8), material: &str, name: &str) -> World {
+    let mut w = World::new();
+    for b in bricks {
+        let dir = match b.dir {
+            cone::Dir::XP => Direction::XPositive,
+            cone::Dir::XN => Direction::XNegative,
+            cone::Dir::YP => Direction::YPositive,
+            cone::Dir::YN => Direction::YNegative,
+            cone::Dir::ZP => Direction::ZPositive,
+            cone::Dir::ZN => Direction::ZNegative,
+        };
+        w.bricks.push(Brick {
+            asset: BType::Procedural {
+                asset: brdb::BString::str(b.asset),
+                size: BrickSize { x: b.size.0 as u16, y: b.size.1 as u16, z: b.size.2 as u16 },
+            },
+            position: (b.pos.0, b.pos.1, b.pos.2).into(),
+            rotation: [Rotation::Deg0, Rotation::Deg90, Rotation::Deg180, Rotation::Deg270][b.rot as usize % 4],
+            direction: dir,
+            color: color.into(),
+            material: brdb::BString::from(material.to_string()),
+            material_intensity: 5,
+            ..Default::default()
+        });
+    }
+    if let Some((min, max)) = w.brick_bounds() {
+        let (cx, cy, cz) = ((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
+        for b in &mut w.bricks {
+            b.position.x -= cx;
+            b.position.y -= cy;
+            b.position.z -= cz;
+        }
+    }
+    w.meta.bundle.name = name.to_string();
+    w.meta.bundle.description = "Made with Circle Generator".into();
+    w.meta.bundle.game_version = "CL16507".into();
+    w.make_prefab();
+    w
+}

@@ -3,7 +3,8 @@
 //! preview, and saves / copies the result.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use circlegen::{build, check, to_world, BrickStyle, Fill, Kind, Layout, Settings, Shape};
+use circlegen::cone::{self, ConeFill, ConeResult, ConeSettings, ConeType, Levels};
+use circlegen::{build, check, cone_world, to_world, BrickStyle, Fill, Kind, Layout, Settings, Shape};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Stroke, Vec2};
 
 // ---- colours (matched to heightmap2brz's brz tools) ----
@@ -44,7 +45,31 @@ enum LogKind {
     Err,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Circle,
+    Cone,
+}
+
 struct App {
+    tab: Tab,
+    // ---- cone tab ----
+    c_shape: Shape,
+    c_type: ConeType,
+    c_levels: Levels,
+    c_oval: bool,
+    c_bw: i32,
+    c_bl: i32,
+    c_tw: i32,
+    c_tl: i32,
+    c_h: i32,
+    c_block: i32,
+    c_band: i32,
+    c_fill: ConeFill,
+    c_flip: bool,
+    c_key: String,
+    c_built: Option<Result<ConeResult, String>>,
+    // ---- circle tab ----
     shape: Shape,
     kind: Kind,
     inverse: bool,
@@ -79,6 +104,22 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         style_ui(&cc.egui_ctx);
         let mut a = App {
+            tab: Tab::Circle,
+            c_shape: Shape::Full,
+            c_type: ConeType::Solid,
+            c_levels: Levels::Single,
+            c_oval: false,
+            c_bw: 40,
+            c_bl: 40,
+            c_tw: 38,
+            c_tl: 38,
+            c_h: 4,
+            c_block: 60,
+            c_band: 15,
+            c_fill: ConeFill::LargeBlocks,
+            c_flip: false,
+            c_key: String::new(),
+            c_built: None,
             shape: Shape::Full,
             kind: Kind::Solid,
             inverse: false,
@@ -102,6 +143,9 @@ impl App {
             confirm_replace: None,
             always_on_top: false,
         };
+        if std::env::var("CG_TAB").as_deref() == Ok("cone") {
+            a.tab = Tab::Cone;
+        }
         a.file_name = a.auto_name();
         a
     }
@@ -156,6 +200,9 @@ impl App {
     }
 
     fn auto_name(&self) -> String {
+        if self.tab == Tab::Cone {
+            return self.cone_name();
+        }
         let shape = match self.shape {
             Shape::Full => "Full",
             Shape::Half => "Half",
@@ -225,6 +272,18 @@ impl App {
     }
 
     fn rebuild_if_needed(&mut self) {
+        if self.tab == Tab::Cone {
+            let c = self.cone_settings();
+            let key = format!("{c:?}");
+            if key != self.c_key {
+                self.c_key = key;
+                self.c_built = Some(cone::build_cone(&c));
+                if !self.name_edited {
+                    self.file_name = self.auto_name();
+                }
+            }
+            return;
+        }
         let s = self.settings();
         let key = format!("{:?}{:?}{}{:?}{}{}", s.layout, s.style, s.height, s.color, s.material, self.oval);
         if key != self.key {
@@ -238,6 +297,9 @@ impl App {
 
     /// Full gap / overlap check before anything leaves the program.
     fn checked_bytes(&mut self) -> Option<(Vec<u8>, usize)> {
+        if self.tab == Tab::Cone {
+            return self.cone_bytes();
+        }
         let mut s = self.settings();
         s.name = self.file_name.trim().to_string();
         let built = match build(&s) {
@@ -414,8 +476,40 @@ fn fmt_num(x: f64) -> String {
     s.to_string()
 }
 
+/// Up / Down arrows change a focused number box by `step`, Shift + arrow by 10.
+fn arrow_keys(ui: &mut egui::Ui, v: &mut i32, step: i32, min: i32, max: i32) {
+    let id = ui.next_auto_id();
+    if ui.memory(|m| m.has_focus(id)) {
+        // egui matches arrow keys whether or not Shift is held, so read Shift separately
+        let (shift, up, dn) = ui.input_mut(|i| {
+            (
+                i.modifiers.shift,
+                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) as i32,
+                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) as i32,
+            )
+        });
+        let d = (up - dn) * if shift { 10 } else { step };
+        if d != 0 {
+            *v = (*v + d).clamp(min, max);
+            ui.data_mut(|data| data.remove::<String>(id));
+        }
+    }
+}
+
+/// Number box with arrow keys.
+fn num_box(ui: &mut egui::Ui, v: &mut i32, min: i32, max: i32, step: i32) {
+    ui.allocate_ui_with_layout(Vec2::new(62.0, 22.0), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+        arrow_keys(ui, v, step, min, max);
+        ui.add(egui::DragValue::new(v).range(min..=max).speed(0.2));
+    });
+}
+
 /// Slider + type-in box. Slider stops at `slider_max`; the box goes to `type_max`.
 fn size_row(ui: &mut egui::Ui, name: &str, v: &mut i32, min: i32, slider_max: i32, type_max: i32, note: String, enabled: bool) -> bool {
+    size_row_s(ui, name, v, min, slider_max, type_max, note, enabled, 1)
+}
+
+fn size_row_s(ui: &mut egui::Ui, name: &str, v: &mut i32, min: i32, slider_max: i32, type_max: i32, note: String, enabled: bool, step: i32) -> bool {
     let before = *v;
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
@@ -424,7 +518,7 @@ fn size_row(ui: &mut egui::Ui, name: &str, v: &mut i32, min: i32, slider_max: i3
             if ui.add(egui::Slider::new(&mut sv, min..=slider_max).logarithmic(slider_max > 100).show_value(false)).changed() {
                 *v = sv;
             }
-            ui.add_sized([62.0, 22.0], egui::DragValue::new(v).range(min..=type_max).speed(0.2));
+            num_box(ui, v, min, type_max, step);
             ui.label(RichText::new(note).color(Color32::from_rgb(0xd6, 0xde, 0xf0)).size(12.5));
         });
     });
@@ -444,7 +538,12 @@ impl eframe::App for App {
                             ui.label(bold("Circle Generator", 26.0).color(Color32::WHITE));
                             ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(Color32::from_rgb(0x8f, 0xa2, 0xc2)));
                         });
-                        ui.label(bold("Smooth circles from Micro Wedges or Side Wedges, saved as Brickadia prefabs.", 13.0).color(SOFT));
+                        ui.label(bold("Smooth circles and cones from wedges, saved as Brickadia prefabs.", 13.0).color(SOFT));
+                        ui.add_space(4.0);
+                        if seg(ui, &mut self.tab, &[(Tab::Circle, "◯ Circle"), (Tab::Cone, "△ Cone")]) && !self.name_edited {
+                            self.key.clear();
+                            self.c_key.clear();
+                        }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
                         if ui.checkbox(&mut self.always_on_top, "Always on top").changed() {
@@ -514,6 +613,11 @@ impl eframe::App for App {
 
 impl App {
     fn controls(&mut self, ui: &mut egui::Ui) {
+        if self.tab == Tab::Cone {
+            self.cone_controls(ui);
+            self.colour_card(ui);
+            return;
+        }
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 label(ui, "Shape");
@@ -568,7 +672,8 @@ impl App {
             if !self.oval {
                 let dlo = dmin.min(self.width.max(2));
                 let n = note(self.width as f64);
-                size_row(ui, if which == "Hole " { "Hole diameter" } else { "Diameter" }, &mut self.width, dlo, smax, tmax, n, true);
+                let st = if self.shape == Shape::Full { 1 } else { 2 };
+                size_row_s(ui, if which == "Hole " { "Hole diameter" } else { "Diameter" }, &mut self.width, dlo, smax, tmax, n, true, st);
                 // radius, linked
                 ui.horizontal(|ui| {
                     label(ui, if which == "Hole " { "Hole radius" } else { "Radius" });
@@ -577,9 +682,16 @@ impl App {
                     if ui.add(egui::Slider::new(&mut sr, (dmin as f64 / 2.0)..=(smax as f64 / 2.0)).logarithmic(true).show_value(false).step_by(0.5)).changed() {
                         self.width = (sr * 2.0).round() as i32;
                     }
-                    if ui.add_sized([62.0, 22.0], egui::DragValue::new(&mut r).range(1.0..=(tmax as f64 / 2.0)).speed(0.1).max_decimals(1).custom_formatter(|v, _| fmt_num(v))).changed() {
-                        self.width = (r * 2.0).round() as i32;
-                    }
+                    let mut dia = self.width;
+                    ui.allocate_ui_with_layout(Vec2::new(62.0, 22.0), egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                        arrow_keys(ui, &mut dia, 1, 2, tmax);
+                        if dia != self.width {
+                            r = dia as f64 / 2.0;
+                        }
+                        if ui.add(egui::DragValue::new(&mut r).range(1.0..=(tmax as f64 / 2.0)).speed(0.1).max_decimals(1).custom_formatter(|v, _| fmt_num(v))).changed() || dia != self.width {
+                            self.width = (r * 2.0).round() as i32;
+                        }
+                    });
                     ui.label(RichText::new(note(self.width as f64 / 2.0)).color(Color32::from_rgb(0xd6, 0xde, 0xf0)).size(12.5));
                 });
                 ui.label(RichText::new("                              🔗 Diameter and radius are linked").size(11.5).color(Color32::from_rgb(0x9f, 0xb6, 0xdc)));
@@ -651,6 +763,10 @@ impl App {
         });
         ui.add_space(4.0);
 
+        self.colour_card(ui);
+    }
+
+    fn colour_card(&mut self, ui: &mut egui::Ui) {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 label(ui, "Colour");
@@ -682,6 +798,10 @@ impl App {
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        if self.tab == Tab::Cone {
+            self.cone_preview(ui);
+            return;
+        }
         let stats_h = 64.0;
         let out_h = 44.0;
         let avail = ui.available_size();
@@ -788,6 +908,10 @@ impl App {
 
         // ---- output ----
         let ok = matches!(self.built, Some(Ok(_)));
+        self.output_row(ui, ok);
+    }
+
+    fn output_row(&mut self, ui: &mut egui::Ui, ok: bool) {
         ui.horizontal(|ui| {
             let bw = 160.0;
             let r = ui.add_sized([ui.available_width() - 2.0 * bw - 16.0, 34.0], egui::TextEdit::singleline(&mut self.file_name).vertical_align(egui::Align::Center));
@@ -809,6 +933,277 @@ impl App {
                 self.file_name = self.auto_name();
             }
         }
+    }
+}
+
+
+// ======================================================================= Cone tab
+impl App {
+    fn cone_settings(&self) -> ConeSettings {
+        let (bl, tl) = if self.c_oval { (self.c_bl, self.c_tl) } else { (self.c_bw, self.c_tw) };
+        ConeSettings {
+            shape: self.c_shape,
+            ctype: self.c_type,
+            levels: self.c_levels,
+            bottom_w: self.c_bw,
+            bottom_l: bl,
+            top_w: self.c_tw,
+            top_l: tl,
+            height: self.c_h,
+            block: self.c_block,
+            band: self.c_band,
+            fill: self.c_fill,
+            upside_down: self.c_flip,
+        }
+    }
+
+    fn cone_name(&self) -> String {
+        let c = self.cone_settings();
+        let shape = match c.shape {
+            Shape::Full => "Full",
+            Shape::Half => "Half",
+            Shape::Quarter => "Quarter",
+        };
+        let ty = match c.ctype {
+            ConeType::Solid => "Solid",
+            ConeType::Hollow => "Hollow",
+            ConeType::Inverse => "Hole",
+            ConeType::Doughnut => "SlopedDoughnut",
+        };
+        let lv = match c.levels {
+            Levels::Single => "SingleLevel",
+            Levels::Multiple => "Levels",
+        };
+        let size = |w: i32, l: i32| if w == l { format!("{w}") } else { format!("{w}x{l}") };
+        let fill = match (c.ctype, c.fill) {
+            (ConeType::Hollow, _) => "",
+            (_, ConeFill::LargeBlocks) => "_LargeBlocks",
+            (_, ConeFill::Strips) => "_Strips",
+        };
+        let extra = match c.ctype {
+            ConeType::Inverse => format!("_block{}", c.block),
+            ConeType::Doughnut => format!("_band{}", c.band),
+            _ => String::new(),
+        };
+        let base = if self.c_oval { "OvalCone" } else { "Cone" };
+        format!(
+            "{base}_{shape}_{ty}_{lv}_{}to{}M_{}M{extra}{fill}{}",
+            size(c.bottom_w, c.bottom_l),
+            size(c.top_w, c.top_l),
+            c.height,
+            if c.upside_down { "_UpsideDown" } else { "" }
+        )
+    }
+
+    fn cone_bytes(&mut self) -> Option<(Vec<u8>, usize)> {
+        let c = self.cone_settings();
+        let r = match cone::build_cone(&c) {
+            Ok(r) => r,
+            Err(e) => {
+                self.log(LogKind::Err, e);
+                return None;
+            }
+        };
+        let bad = cone::overlaps(&r.bricks);
+        if bad > 0 {
+            self.log(LogKind::Err, format!("Self-check failed ({bad} overlapping bricks). Nothing was saved. Please send this settings combination to Claude."));
+            return None;
+        }
+        let w = cone_world(&r.bricks, (self.color[0], self.color[1], self.color[2]), MATERIALS[self.material].1, self.file_name.trim());
+        match w.to_brz_vec() {
+            Ok(b) => Some((b, r.bricks.len())),
+            Err(e) => {
+                self.log(LogKind::Err, format!("Could not create the prefab: {e}"));
+                None
+            }
+        }
+    }
+
+    fn cone_controls(&mut self, ui: &mut egui::Ui) {
+        let tmax = TYPE_MAX_MICRO;
+        let smax = SLIDER_MAX_MICRO;
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                label(ui, "Shape");
+                seg(ui, &mut self.c_shape, &[(Shape::Full, "● Full"), (Shape::Half, "◓ Half"), (Shape::Quarter, "◔ Quarter")]);
+                ui.checkbox(&mut self.c_oval, bold("Oval", 13.5));
+            });
+            ui.horizontal(|ui| {
+                label(ui, "Type");
+                let before = self.c_type;
+                seg(ui, &mut self.c_type, &[(ConeType::Solid, "Solid"), (ConeType::Hollow, "Hollow"), (ConeType::Inverse, "Inverse"), (ConeType::Doughnut, "Sloped doughnut")]);
+                // a hole is wide at the top: swap the sizes when switching to or from Inverse
+                if (before == ConeType::Inverse) != (self.c_type == ConeType::Inverse) {
+                    std::mem::swap(&mut self.c_bw, &mut self.c_tw);
+                    std::mem::swap(&mut self.c_bl, &mut self.c_tl);
+                }
+            });
+            ui.horizontal(|ui| {
+                label(ui, "Levels");
+                seg(ui, &mut self.c_levels, &[(Levels::Single, "Single level"), (Levels::Multiple, "Multiple levels")]);
+            });
+            ui.horizontal(|ui| {
+                label(ui, "Fill");
+                if self.c_type == ConeType::Hollow {
+                    ui.label(RichText::new("Hollow shapes have no filler").italics().color(SOFT));
+                } else {
+                    seg(ui, &mut self.c_fill, &[(ConeFill::LargeBlocks, "Large blocks"), (ConeFill::Strips, "Strips")]);
+                }
+            });
+            ui.horizontal(|ui| {
+                label(ui, "");
+                ui.checkbox(&mut self.c_flip, bold("Upside down", 13.5));
+            });
+            ui.label(RichText::new("All cone pieces are micro bricks (the corner wedges only exist as micro bricks).").size(11.5).color(Color32::from_rgb(0x9f, 0xb6, 0xdc)));
+        });
+        ui.add_space(4.0);
+
+        let even = if self.c_shape == Shape::Full { 1 } else { 2 };
+        let note = |v: i32| format!("M ({})", studs(v as f64 / 5.0));
+        card(ui, |ui| {
+            let hole = self.c_type == ConeType::Inverse;
+            let dough = self.c_type == ConeType::Doughnut;
+            let (bname, tname) = if hole {
+                ("Bottom opening", "Top opening")
+            } else if dough {
+                ("Slope bottom", "Band outside")
+            } else {
+                ("Bottom", "Top")
+            };
+            if !self.c_oval {
+                let n = note(self.c_bw);
+                size_row_s(ui, bname, &mut self.c_bw, 4, smax, tmax, n, true, even);
+                let n = note(self.c_tw);
+                size_row_s(ui, tname, &mut self.c_tw, 4, smax, tmax, n, true, even);
+                self.c_bl = self.c_bw;
+                self.c_tl = self.c_tw;
+            } else {
+                let n = note(self.c_bw);
+                size_row_s(ui, &format!("{bname} width"), &mut self.c_bw, 4, smax, tmax, n, true, even);
+                let n = note(self.c_bl);
+                size_row_s(ui, &format!("{bname} length"), &mut self.c_bl, 4, smax, tmax, n, true, even);
+                let n = note(self.c_tw);
+                size_row_s(ui, &format!("{tname} width"), &mut self.c_tw, 4, smax, tmax, n, true, even);
+                let n = note(self.c_tl);
+                size_row_s(ui, &format!("{tname} length"), &mut self.c_tl, 4, smax, tmax, n, true, even);
+            }
+            let hn = format!("M ({} bricks / {} plates)", fmt_num(self.c_h as f64 / 6.0), fmt_num(self.c_h as f64 / 2.0));
+            size_row(ui, "Height", &mut self.c_h, 1, 4000, 4000, hn, true);
+            if hole {
+                let n = note(self.c_block);
+                size_row_s(ui, "Block size", &mut self.c_block, 6, smax, tmax, n, true, even);
+            }
+            if dough {
+                let n = note(self.c_band);
+                size_row(ui, "Band width", &mut self.c_band, 1, 1000, tmax / 2, n, true);
+                let (hw, hl) = (self.c_tw - 2 * self.c_band, if self.c_oval { self.c_tl } else { self.c_tw } - 2 * self.c_band);
+                let txt = if self.c_oval { format!("Hole: {hw} × {hl} M") } else { format!("Hole diameter: {hw} M") };
+                ui.label(RichText::new(format!("                              {txt}")).size(12.5).strong().color(Color32::WHITE));
+            }
+            // slope angle
+            let run = ((self.c_bw - self.c_tw).abs() as f64) / 2.0;
+            if run > 0.0 {
+                let ang = (self.c_h as f64 / run).atan().to_degrees();
+                ui.label(RichText::new(format!("                              Slope: {} M across, {} M up → about {:.0}°", fmt_num(run), self.c_h, ang)).size(12.5).color(Color32::from_rgb(0xd6, 0xde, 0xf0)));
+            }
+            if let Some(Ok(r)) = &self.c_built {
+                for w in &r.warnings {
+                    ui.label(RichText::new(w).size(12.0).color(WARN));
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+
+    fn cone_preview(&mut self, ui: &mut egui::Ui) {
+        let stats_h = 64.0;
+        let out_h = 44.0;
+        let avail = ui.available_size();
+        let prev_h = (avail.y - stats_h - out_h - 24.0).max(200.0);
+        egui::Frame::new()
+            .fill(PREVIEW)
+            .corner_radius(CornerRadius::same(12))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0x26, 0x35, 0x4f)))
+            .show(ui, |ui| {
+                let (resp, painter) = ui.allocate_painter(Vec2::new(avail.x, prev_h), egui::Sense::hover());
+                let r = resp.rect;
+                painter.text(r.left_top() + Vec2::new(14.0, 12.0), egui::Align2::LEFT_TOP, "TOP-DOWN PREVIEW (lighter = higher)", egui::FontId::proportional(12.0), Color32::from_rgb(0x8f, 0xa2, 0xc2));
+                let mut lx = r.right() - 14.0;
+                for (t, c) in [("slope wedges", WEDGE), ("filler", FILLER)] {
+                    let g = painter.layout_no_wrap(t.into(), egui::FontId::proportional(11.5), Color32::from_rgb(0xa9, 0xb8, 0xd3));
+                    lx -= g.size().x;
+                    painter.galley(Pos2::new(lx, r.top() + 12.0), g.clone(), Color32::WHITE);
+                    lx -= 15.0;
+                    painter.rect_filled(egui::Rect::from_min_size(Pos2::new(lx, r.top() + 14.0), Vec2::splat(10.0)), 2.0, c);
+                    lx -= 12.0;
+                }
+                match &self.c_built {
+                    Some(Ok(res)) => {
+                        let mut items: Vec<(i32, Vec<(f64, f64)>, bool)> =
+                            res.bricks.iter().map(|b| (cone::top_z(b), cone::footprint_poly(b), b.asset == cone::A_TRI || b.asset == cone::A_OUT || b.dir != cone::Dir::ZP && b.dir != cone::Dir::ZN)).collect();
+                        items.sort_by_key(|i| i.0);
+                        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                        let (mut zlo, mut zhi) = (i32::MAX, i32::MIN);
+                        for (z, p, _) in &items {
+                            zlo = zlo.min(*z);
+                            zhi = zhi.max(*z);
+                            for &(x, y) in p {
+                                x0 = x0.min(x);
+                                x1 = x1.max(x);
+                                y0 = y0.min(y);
+                                y1 = y1.max(y);
+                            }
+                        }
+                        let area = r.shrink2(Vec2::new(24.0, 40.0));
+                        let sc = (area.width() as f64 / (x1 - x0)).min(area.height() as f64 / (y1 - y0)) as f32;
+                        let (cx, cy) = (((x0 + x1) / 2.0) as f32, ((y0 + y1) / 2.0) as f32);
+                        let c = area.center() + Vec2::new(0.0, 10.0);
+                        let to = |x: f64, y: f64| Pos2::new(c.x + (x as f32 - cx) * sc, c.y - (y as f32 - cy) * sc);
+                        let stroke = if items.len() < 1500 { Stroke::new(0.6_f32, OUTLINE) } else { Stroke::NONE };
+                        for (z, p, slope) in &items {
+                            let t = if zhi > zlo { (*z - zlo) as f32 / (zhi - zlo) as f32 } else { 1.0 };
+                            let base = if *slope { WEDGE } else { FILLER };
+                            let col = base.gamma_multiply(0.45 + 0.55 * t);
+                            let pts: Vec<Pos2> = p.iter().map(|&(x, y)| to(x, y)).collect();
+                            painter.add(egui::Shape::convex_polygon(pts, col, stroke));
+                        }
+                    }
+                    Some(Err(e)) => {
+                        painter.text(r.center(), egui::Align2::CENTER_CENTER, e, egui::FontId::proportional(14.0), WARN);
+                    }
+                    None => {}
+                }
+            });
+        ui.add_space(8.0);
+        let (total, slope, levels) = match &self.c_built {
+            Some(Ok(r)) => {
+                let s = r.bricks.iter().filter(|b| b.asset == cone::A_TRI || b.asset == cone::A_OUT || matches!(b.dir, cone::Dir::XP | cone::Dir::XN | cone::Dir::YP | cone::Dir::YN)).count();
+                let lv = if r.step > 1 { format!("{} levels · {} M steps", r.levels, r.step) } else { format!("{} level{}", r.levels, if r.levels == 1 { "" } else { "s" }) };
+                (r.bricks.len(), s, lv)
+            }
+            _ => (0, 0, "-".into()),
+        };
+        ui.horizontal(|ui| {
+            let w = (ui.available_width() - 3.0 * 8.0) / 4.0;
+            for (big, small) in [
+                (total.to_string(), "bricks in total".to_string()),
+                (slope.to_string(), "slope wedges".to_string()),
+                ((total - slope).to_string(), "filler bricks".to_string()),
+                (levels, format!("{} M tall", self.c_h)),
+            ] {
+                egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.set_width(w - 24.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(bold(big, 20.0).color(Color32::WHITE));
+                        ui.label(RichText::new(small).size(11.5).color(SOFT));
+                    });
+                });
+            }
+        });
+        ui.add_space(8.0);
+        let ok = matches!(self.c_built, Some(Ok(_)));
+        self.output_row(ui, ok);
     }
 }
 
