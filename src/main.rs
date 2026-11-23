@@ -4,6 +4,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use circlegen::cone::{self, ConeFill, ConeResult, ConeSettings, ConeType, Levels};
+use circlegen::shell::{self, BearingSide, ColourMode, Curve, Seam, ShellResult, ShellSettings, Spacing, SphereInput};
 use circlegen::{build, check, cone_world, to_world, BrickStyle, Fill, Kind, Layout, Settings, Shape};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Stroke, Vec2};
 
@@ -49,10 +50,18 @@ enum LogKind {
 enum Tab {
     Circle,
     Cone,
+    Shell,
 }
 
 struct App {
     tab: Tab,
+    // ---- shell tab ----
+    s_set: ShellSettings,
+    s_points: String,
+    s_key: String,
+    s_built: Option<Result<ShellResult, String>>,
+    s_view: (f32, f32),
+    s_mat: usize,
     // ---- cone tab ----
     c_shape: Shape,
     c_type: ConeType,
@@ -105,6 +114,12 @@ impl App {
         style_ui(&cc.egui_ctx);
         let mut a = App {
             tab: Tab::Circle,
+            s_set: ShellSettings::default(),
+            s_points: points_text(&shell::balloon_points()),
+            s_key: String::new(),
+            s_built: None,
+            s_view: (35.0, 25.0),
+            s_mat: 0,
             c_shape: Shape::Full,
             c_type: ConeType::Solid,
             c_levels: Levels::Single,
@@ -143,8 +158,10 @@ impl App {
             confirm_replace: None,
             always_on_top: false,
         };
-        if std::env::var("CG_TAB").as_deref() == Ok("cone") {
-            a.tab = Tab::Cone;
+        match std::env::var("CG_TAB").as_deref() {
+            Ok("cone") => a.tab = Tab::Cone,
+            Ok("shell") => a.tab = Tab::Shell,
+            _ => {}
         }
         a.file_name = a.auto_name();
         a
@@ -200,6 +217,9 @@ impl App {
     }
 
     fn auto_name(&self) -> String {
+        if self.tab == Tab::Shell {
+            return self.shell_name();
+        }
         if self.tab == Tab::Cone {
             return self.cone_name();
         }
@@ -272,6 +292,18 @@ impl App {
     }
 
     fn rebuild_if_needed(&mut self) {
+        if self.tab == Tab::Shell {
+            let s = self.shell_settings();
+            let key = format!("{s:?}");
+            if key != self.s_key {
+                self.s_key = key;
+                self.s_built = Some(shell::build_shell(&s));
+                if !self.name_edited {
+                    self.file_name = self.auto_name();
+                }
+            }
+            return;
+        }
         if self.tab == Tab::Cone {
             let c = self.cone_settings();
             let key = format!("{c:?}");
@@ -297,6 +329,9 @@ impl App {
 
     /// Full gap / overlap check before anything leaves the program.
     fn checked_bytes(&mut self) -> Option<(Vec<u8>, usize)> {
+        if self.tab == Tab::Shell {
+            return self.shell_bytes();
+        }
         if self.tab == Tab::Cone {
             return self.cone_bytes();
         }
@@ -357,7 +392,7 @@ impl App {
             self.log(LogKind::Err, format!("Could not save: {e}"));
             return;
         }
-        self.log(LogKind::Ok, format!("Saved {n} bricks to {} (checked: no gaps, no overlaps).", path.display()));
+        self.log(LogKind::Ok, format!("Saved {n} bricks to {} (self-check passed).", path.display()));
     }
 
     fn copy(&mut self) {
@@ -369,7 +404,7 @@ impl App {
             return;
         }
         match copy_file_to_clipboard(&path) {
-            Ok(()) => self.log(LogKind::Ok, format!("Copied {n} bricks. In game, paste with Ctrl+V (checked: no gaps, no overlaps).")),
+            Ok(()) => self.log(LogKind::Ok, format!("Copied {n} bricks. In game, paste with Ctrl+V (self-check passed).")),
             Err(e) => self.log(LogKind::Err, e),
         }
     }
@@ -538,11 +573,12 @@ impl eframe::App for App {
                             ui.label(bold("Circle Generator", 26.0).color(Color32::WHITE));
                             ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(Color32::from_rgb(0x8f, 0xa2, 0xc2)));
                         });
-                        ui.label(bold("Smooth circles and cones from wedges, saved as Brickadia prefabs.", 13.0).color(SOFT));
+                        ui.label(bold("Smooth circles, cones and curved shells, saved as Brickadia prefabs.", 13.0).color(SOFT));
                         ui.add_space(4.0);
-                        if seg(ui, &mut self.tab, &[(Tab::Circle, "◯ Circle"), (Tab::Cone, "△ Cone")]) && !self.name_edited {
+                        if seg(ui, &mut self.tab, &[(Tab::Circle, "◯ Circle"), (Tab::Cone, "△ Cone"), (Tab::Shell, "◠ Shell")]) && !self.name_edited {
                             self.key.clear();
                             self.c_key.clear();
+                            self.s_key.clear();
                         }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
@@ -613,6 +649,10 @@ impl eframe::App for App {
 
 impl App {
     fn controls(&mut self, ui: &mut egui::Ui) {
+        if self.tab == Tab::Shell {
+            self.shell_controls(ui);
+            return;
+        }
         if self.tab == Tab::Cone {
             self.cone_controls(ui);
             self.colour_card(ui);
@@ -798,6 +838,10 @@ impl App {
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        if self.tab == Tab::Shell {
+            self.shell_preview(ui);
+            return;
+        }
         if self.tab == Tab::Cone {
             self.cone_preview(ui);
             return;
@@ -1203,6 +1247,361 @@ impl App {
         });
         ui.add_space(8.0);
         let ok = matches!(self.c_built, Some(Ok(_)));
+        self.output_row(ui, ok);
+    }
+}
+
+// ======================================================================= Shell tab
+fn points_text(p: &[(f64, f64)]) -> String {
+    p.iter().map(|(r, z)| format!("{}, {}", fmt_num(*r), fmt_num(*z))).collect::<Vec<_>>().join("\n")
+}
+
+/// "radius, height" per line (micro bricks). Returns the points or a message.
+fn parse_points(t: &str) -> Result<Vec<(f64, f64)>, String> {
+    let mut v = vec![];
+    for (i, line) in t.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|x| !x.is_empty()).collect();
+        if parts.len() != 2 {
+            return Err(format!("Line {}: write two numbers, radius and height, like 40, 120", i + 1));
+        }
+        let r: f64 = parts[0].parse().map_err(|_| format!("Line {}: '{}' isn't a number", i + 1, parts[0]))?;
+        let z: f64 = parts[1].parse().map_err(|_| format!("Line {}: '{}' isn't a number", i + 1, parts[1]))?;
+        v.push((r, z));
+    }
+    Ok(v)
+}
+
+impl App {
+    fn shell_settings(&self) -> ShellSettings {
+        let mut s = self.s_set.clone();
+        s.points = parse_points(&self.s_points).unwrap_or_default();
+        s.material = MATERIALS[self.s_mat].1.to_string();
+        s
+    }
+
+    fn shell_name(&self) -> String {
+        let s = self.shell_settings();
+        let shape = match s.curve {
+            Curve::Cone => format!("Cone_{}to{}M_{}M", s.cone_bottom, s.cone_top, s.cone_height),
+            Curve::Dish => format!("Dish_r{}M_d{}M", s.dish_radius, s.dish_depth),
+            Curve::Sphere => match s.sphere_input {
+                SphereInput::Angles => format!("Sphere_r{}M_{}to{}deg", s.sphere_radius, s.start_deg, s.end_deg),
+                SphereInput::RadiusDepth => format!("SphereCap_r{}M_d{}M", s.cap_radius, s.cap_depth),
+            },
+            Curve::Custom => format!("Custom_{}pts", s.points.len()),
+        };
+        format!(
+            "Shell_{shape}_{}x{}_{}M{}{}",
+            s.strips,
+            s.rings,
+            s.thickness,
+            if s.bearings { "" } else { "_NoBearings" },
+            if s.upside_down { "_UpsideDown" } else { "" }
+        )
+    }
+
+    fn shell_bytes(&mut self) -> Option<(Vec<u8>, usize)> {
+        let s = self.shell_settings();
+        let name = self.file_name.trim().to_string();
+        match shell::shell_bytes(&s, &name) {
+            Ok((r, b)) => Some((b, r.brick_count())),
+            Err(e) => {
+                self.log(LogKind::Err, e);
+                None
+            }
+        }
+    }
+
+    fn shell_controls(&mut self, ui: &mut egui::Ui) {
+        let tmax = TYPE_MAX_MICRO;
+        let smax = SLIDER_MAX_MICRO;
+        let note = |m: i32| format!("M = {}", studs(m as f64 / 5.0));
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                label(ui, "Shape");
+                seg(ui, &mut self.s_set.curve, &[(Curve::Cone, "Cone"), (Curve::Dish, "Dish"), (Curve::Sphere, "Sphere"), (Curve::Custom, "Custom")]);
+            });
+            let s = &mut self.s_set;
+            match s.curve {
+                Curve::Cone => {
+                    { let nt = note(s.cone_bottom); size_row(ui, "Start radius", &mut s.cone_bottom, 0, smax, tmax, nt, true); }
+                    { let nt = note(s.cone_top); size_row(ui, "End radius", &mut s.cone_top, 0, smax, tmax, nt, true); }
+                    { let nt = note(s.cone_height); size_row(ui, "Height", &mut s.cone_height, 1, smax, tmax, nt, true); }
+                    ui.label(RichText::new("The strips meet at the start end. A start radius of 0 makes a point.").size(12.0).color(SOFT));
+                }
+                Curve::Dish => {
+                    { let nt = note(s.dish_radius); size_row(ui, "Radius", &mut s.dish_radius, 2, smax, tmax, nt, true); }
+                    { let nt = note(s.dish_depth); size_row(ui, "Depth", &mut s.dish_depth, 1, smax, tmax, nt, true); }
+                    let f = (s.dish_radius as f64).powi(2) / (4.0 * s.dish_depth.max(1) as f64);
+                    ui.label(RichText::new(format!("Parabolic. Focal point {} M above the centre ({}).", fmt_num(f), studs(f / 5.0))).size(12.0).color(SOFT));
+                }
+                Curve::Sphere => {
+                    ui.horizontal(|ui| {
+                        label(ui, "Set by");
+                        seg(ui, &mut s.sphere_input, &[(SphereInput::Angles, "Radius + angles"), (SphereInput::RadiusDepth, "Rim + depth")]);
+                    });
+                    match s.sphere_input {
+                        SphereInput::Angles => {
+                            { let nt = note(s.sphere_radius); size_row(ui, "Radius", &mut s.sphere_radius, 2, smax, tmax, nt, true); }
+                            size_row(ui, "Start angle", &mut s.start_deg, 0, 179, 179, "°".into(), true);
+                            size_row(ui, "End angle", &mut s.end_deg, 1, 180, 180, "°".into(), true);
+                            ui.label(RichText::new("0° = the pole where the strips meet, 90° = halfway, 180° = the far pole.").size(12.0).color(SOFT));
+                        }
+                        SphereInput::RadiusDepth => {
+                            { let nt = note(s.cap_radius); size_row(ui, "Rim radius", &mut s.cap_radius, 2, smax, tmax, nt, true); }
+                            { let nt = note(s.cap_depth); size_row(ui, "Depth", &mut s.cap_depth, 1, smax, tmax, nt, true); }
+                        }
+                    }
+                }
+                Curve::Custom => {
+                    ui.label(RichText::new("Outline points, one per line: radius, height (micro bricks), starting where the strips meet. A smooth curve is drawn through them.").size(12.0).color(SOFT));
+                    ui.add(egui::TextEdit::multiline(&mut self.s_points).desired_rows(6).desired_width(260.0).font(egui::TextStyle::Monospace));
+                    ui.horizontal(|ui| {
+                        if ui.button("Load: your hot air balloon").clicked() {
+                            self.s_points = points_text(&shell::balloon_points());
+                        }
+                        match parse_points(&self.s_points) {
+                            Ok(p) => ui.label(RichText::new(format!("{} points", p.len())).size(12.0).color(SOFT)),
+                            Err(e) => ui.label(RichText::new(e).size(12.0).color(WARN)),
+                        };
+                    });
+                }
+            }
+            ui.checkbox(&mut self.s_set.upside_down, bold("Upside down (strips meet at the top)", 13.5));
+        });
+        card(ui, |ui| {
+            let s = &mut self.s_set;
+            let mut strips = s.strips as i32;
+            let mut rings = s.rings as i32;
+            let nt = format!("{}° each", fmt_num(360.0 / strips.max(3) as f64));
+            size_row(ui, "Strips", &mut strips, 3, 96, 720, nt, true);
+            let nt = format!("{} panels", strips * rings);
+            size_row(ui, "Rings", &mut rings, 1, 40, 400, nt, true);
+            s.strips = strips.max(3) as u32;
+            s.rings = rings.max(1) as u32;
+            ui.horizontal(|ui| {
+                label(ui, "Ring spacing");
+                egui::ComboBox::from_id_salt("spacing")
+                    .width(200.0)
+                    .selected_text(match s.spacing {
+                        Spacing::EqualLength => "Equal panel length",
+                        Spacing::EqualHeight => "Equal height steps",
+                        Spacing::EqualAngle => "Equal angle steps",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut s.spacing, Spacing::EqualLength, "Equal panel length");
+                        ui.selectable_value(&mut s.spacing, Spacing::EqualHeight, "Equal height steps");
+                        ui.selectable_value(&mut s.spacing, Spacing::EqualAngle, "Equal angle steps");
+                    });
+            });
+            { let nt = note(s.thickness); size_row(ui, "Thickness", &mut s.thickness, 1, 20, 200, nt, true); }
+            ui.horizontal(|ui| {
+                label(ui, "Seams");
+                egui::ComboBox::from_id_salt("seam")
+                    .width(260.0)
+                    .selected_text(match s.seam {
+                        Seam::Outside => "Smooth outside (overlap inside)",
+                        Seam::Inside => "Smooth inside (gaps outside)",
+                        Seam::Middle => "Split evenly",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut s.seam, Seam::Outside, "Smooth outside (overlap inside)");
+                        ui.selectable_value(&mut s.seam, Seam::Inside, "Smooth inside (gaps outside)");
+                        ui.selectable_value(&mut s.seam, Seam::Middle, "Split evenly");
+                    });
+            });
+        });
+        card(ui, |ui| {
+            let s = &mut self.s_set;
+            ui.checkbox(&mut s.bearings, bold("Bearings (working hinges, like your dome)", 13.5));
+            ui.add_enabled_ui(s.bearings, |ui| {
+                ui.checkbox(&mut s.hide_bearings, "Hide bearings (invisible, no collision)");
+                ui.checkbox(&mut s.column_inside, "Centre column inside the shape");
+                if s.bearings && s.thickness == 1 {
+                    ui.label(RichText::new("⚠ 1-micro panels can't hide their bearings. Choose which face they sit on:").size(12.5).color(WARN));
+                    ui.horizontal(|ui| {
+                        label(ui, "Bearing face");
+                        seg(ui, &mut s.bearing_side, &[(BearingSide::Inside, "Inside"), (BearingSide::Outside, "Outside")]);
+                    });
+                }
+            });
+            if !s.bearings {
+                ui.label(RichText::new("⚠ Without bearings the panels paste frozen and won't hold their angle if unfrozen.").size(12.0).color(WARN));
+            }
+        });
+        card(ui, |ui| {
+            let s = &mut self.s_set;
+            ui.horizontal(|ui| {
+                label(ui, "Colours");
+                seg(ui, &mut s.colour_mode, &[(ColourMode::One, "One"), (ColourMode::PerRing, "Per ring"), (ColourMode::PerStrip, "Per strip"), (ColourMode::Checker, "Checker")]);
+            });
+            let shown = if s.colour_mode == ColourMode::One { 1 } else { s.colours.len() };
+            ui.horizontal_wrapped(|ui| {
+                label(ui, "");
+                for c in s.colours.iter_mut().take(shown) {
+                    egui::color_picker::color_edit_button_srgb(ui, c);
+                }
+                if s.colour_mode != ColourMode::One {
+                    if s.colours.len() < 8 && ui.small_button("+").clicked() {
+                        let last = *s.colours.last().unwrap();
+                        s.colours.push(last);
+                    }
+                    if s.colours.len() > 1 && ui.small_button("−").clicked() {
+                        s.colours.pop();
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                label(ui, "Material");
+                egui::ComboBox::from_id_salt("s_material")
+                    .width(150.0)
+                    .selected_text(MATERIALS[self.s_mat].0)
+                    .show_ui(ui, |ui| {
+                        for (i, (n, _)) in MATERIALS.iter().enumerate() {
+                            ui.selectable_value(&mut self.s_mat, i, *n);
+                        }
+                    });
+            });
+        });
+    }
+
+    fn shell_preview(&mut self, ui: &mut egui::Ui) {
+        let stats_h = 64.0;
+        let out_h = 44.0;
+        let avail = ui.available_size();
+        let warn_h = match &self.s_built {
+            Some(Ok(r)) if !r.warnings.is_empty() => 20.0 * r.warnings.len() as f32,
+            _ => 0.0,
+        };
+        let prev_h = (avail.y - stats_h - out_h - 24.0 - warn_h).max(200.0);
+        let colours = self.s_set.colours.clone();
+        egui::Frame::new()
+            .fill(PREVIEW)
+            .corner_radius(CornerRadius::same(12))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0x26, 0x35, 0x4f)))
+            .show(ui, |ui| {
+                let (resp, painter) = ui.allocate_painter(Vec2::new(avail.x, prev_h), egui::Sense::drag());
+                if resp.dragged() {
+                    let d = resp.drag_delta();
+                    self.s_view.0 -= d.x * 0.4;
+                    self.s_view.1 = (self.s_view.1 + d.y * 0.4).clamp(-89.0, 89.0);
+                }
+                let r = resp.rect;
+                painter.text(r.left_top() + Vec2::new(14.0, 12.0), egui::Align2::LEFT_TOP, "3D PREVIEW (drag to turn)", egui::FontId::proportional(12.0), Color32::from_rgb(0x8f, 0xa2, 0xc2));
+                match &self.s_built {
+                    Some(Ok(res)) => {
+                        let (yaw, pitch) = (self.s_view.0.to_radians() as f64, self.s_view.1.to_radians() as f64);
+                        let view = |p: [f64; 3]| -> (f64, f64, f64) {
+                            let (sy, cy) = yaw.sin_cos();
+                            let (x, y, z) = (p[0] * cy - p[1] * sy, p[0] * sy + p[1] * cy, p[2]);
+                            let (sp, cp) = pitch.sin_cos();
+                            // screen x, screen up, depth (bigger = nearer)
+                            (x, z * cp - y * sp, -(y * cp + z * sp))
+                        };
+                        let mut quads: Vec<(f64, [(f64, f64); 4], Color32)> = vec![];
+                        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                        for p in &res.panels {
+                            let m = &p.rot;
+                            let corner = |lx: f64, ly: f64| {
+                                let w = shell::mv(m, [lx, ly, 0.0]);
+                                view([p.loc[0] + w[0], p.loc[1] + w[1], p.loc[2] + w[2]])
+                            };
+                            let h = p.length / 2.0;
+                            let c = [corner(-h, -p.w_in / 2.0), corner(h, -p.w_out / 2.0), corner(h, p.w_out / 2.0), corner(-h, p.w_in / 2.0)];
+                            let depth = c.iter().map(|q| q.2).sum::<f64>() / 4.0;
+                            let n = [m[0][2], m[1][2], m[2][2]];
+                            let nv = view(n);
+                            let light = 0.35 + 0.65 * (nv.2.abs() * 0.7 + nv.1.abs() * 0.3).min(1.0);
+                            let k = colours[p.colour % colours.len()];
+                            let col = Color32::from_rgb((k[0] as f64 * light) as u8, (k[1] as f64 * light) as u8, (k[2] as f64 * light) as u8);
+                            for q in &c {
+                                x0 = x0.min(q.0);
+                                x1 = x1.max(q.0);
+                                y0 = y0.min(q.1);
+                                y1 = y1.max(q.1);
+                            }
+                            quads.push((depth, [(c[0].0, c[0].1), (c[1].0, c[1].1), (c[2].0, c[2].1), (c[3].0, c[3].1)], col));
+                        }
+                        quads.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                        let area = r.shrink2(Vec2::new(24.0, 40.0));
+                        let sc = (area.width() as f64 / (x1 - x0).max(1.0)).min(area.height() as f64 / (y1 - y0).max(1.0)) as f32;
+                        let (cx, cy) = (((x0 + x1) / 2.0) as f32, ((y0 + y1) / 2.0) as f32);
+                        let c = area.center() + Vec2::new(0.0, 10.0);
+                        let to = |x: f64, y: f64| Pos2::new(c.x + (x as f32 - cx) * sc, c.y - (y as f32 - cy) * sc);
+                        let stroke = Stroke::new(0.6_f32, OUTLINE);
+                        for (_, q, col) in &quads {
+                            let mut pts: Vec<Pos2> = vec![];
+                            for &(x, y) in q.iter() {
+                                let pt = to(x, y);
+                                // drop repeated corners (pointed panels), they upset egui's edge smoothing
+                                if pts.iter().all(|o: &Pos2| o.distance(pt) > 0.3) {
+                                    pts.push(pt);
+                                }
+                            }
+                            if pts.len() < 3 {
+                                continue;
+                            }
+                            let k = pts.len();
+                            // same winding for every panel (egui's edge smoothing needs it)
+                            let area2: f32 = (0..k).map(|i| { let (a, b) = (pts[i], pts[(i + 1) % k]); a.x * b.y - b.x * a.y }).sum();
+                            let longest = (0..k).map(|i| pts[i].distance(pts[(i + 1) % k])).fold(0.0f32, f32::max);
+                            if area2.abs() < 0.5 || area2.abs() / (longest * longest).max(1e-3) < 0.02 {
+                                // seen edge-on: draw as lines (egui's smoothing spikes on slivers)
+                                for i in 0..k {
+                                    painter.line_segment([pts[i], pts[(i + 1) % k]], Stroke::new(1.0_f32, *col));
+                                }
+                                continue;
+                            }
+                            if area2 < 0.0 {
+                                pts.reverse();
+                            }
+                            painter.add(egui::Shape::convex_polygon(pts, *col, stroke));
+                        }
+                    }
+                    Some(Err(e)) => {
+                        painter.text(r.center(), egui::Align2::CENTER_CENTER, e, egui::FontId::proportional(14.0), WARN);
+                    }
+                    None => {}
+                }
+            });
+        if let Some(Ok(res)) = &self.s_built {
+            for w in &res.warnings {
+                ui.label(RichText::new(format!("⚠ {w}")).size(12.5).color(WARN));
+            }
+        }
+        ui.add_space(8.0);
+        let (ents, bricks, bearings, size) = match &self.s_built {
+            Some(Ok(r)) => {
+                let rmax = r.outline.iter().map(|p| p.0).fold(0.0, f64::max);
+                let (zlo, zhi) = r.outline.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+                (r.panels.len().to_string(), r.brick_count().to_string(), r.bearing_count().to_string(), format!("{} × {}", studs(rmax * 2.0 / 10.0), studs((zhi - zlo) / 10.0)))
+            }
+            _ => ("-".into(), "-".into(), "-".into(), "-".into()),
+        };
+        ui.horizontal(|ui| {
+            let w = (ui.available_width() - 3.0 * 8.0) / 4.0;
+            for (big, small) in [
+                (ents, "panels (entities)".to_string()),
+                (bricks, "bricks in total".to_string()),
+                (bearings, "bearings".to_string()),
+                (size, "wide × tall".to_string()),
+            ] {
+                egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.set_width(w - 24.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(bold(big, 20.0).color(Color32::WHITE));
+                        ui.label(RichText::new(small).size(11.5).color(SOFT));
+                    });
+                });
+            }
+        });
+        ui.add_space(8.0);
+        let ok = matches!(self.s_built, Some(Ok(_)));
         self.output_row(ui, ok);
     }
 }

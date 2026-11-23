@@ -1,6 +1,6 @@
 [package]
 name = "circle-generator"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Smooth circles for Brickadia, saved as prefabs"
 license = "MIT"
@@ -47,3 +47,11 @@ path = "src/bin/thin.rs"
 [[bin]]
 name = "conesweep"
 path = "src/bin/conesweep.rs"
+
+[[bin]]
+name = "shellpack"
+path = "src/bin/shellpack.rs"
+
+[[bin]]
+name = "shellsweep"
+path = "src/bin/shellsweep.rs"
