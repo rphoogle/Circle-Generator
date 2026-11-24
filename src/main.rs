@@ -52,6 +52,7 @@ enum Tab {
     Circle,
     Cone,
     Shell,
+    Ico,
 }
 
 struct App {
@@ -59,6 +60,7 @@ struct App {
     // ---- shell tab ----
     s_set: ShellSettings,
     // curve editor
+    s_prev_curve: Curve,
     s_sel: Option<usize>,
     s_drag: Option<usize>,
     s_snap: bool,
@@ -123,6 +125,7 @@ impl App {
         let mut a = App {
             tab: Tab::Circle,
             s_set: ShellSettings::default(),
+            s_prev_curve: Curve::Dish,
             s_sel: None,
             s_drag: None,
             s_snap: true,
@@ -175,10 +178,7 @@ impl App {
         match std::env::var("CG_TAB").as_deref() {
             Ok("cone") => a.tab = Tab::Cone,
             Ok("shell") => a.tab = Tab::Shell,
-            Ok("icosphere") => {
-                a.tab = Tab::Shell;
-                a.s_set.curve = Curve::Icosphere;
-            }
+            Ok("icosphere") => a.tab = Tab::Ico,
             Ok("custom") => {
                 a.tab = Tab::Shell;
                 a.s_set.curve = Curve::Custom;
@@ -240,7 +240,7 @@ impl App {
     }
 
     fn auto_name(&self) -> String {
-        if self.tab == Tab::Shell {
+        if matches!(self.tab, Tab::Shell | Tab::Ico) {
             return self.shell_name();
         }
         if self.tab == Tab::Cone {
@@ -315,7 +315,14 @@ impl App {
     }
 
     fn rebuild_if_needed(&mut self) {
-        if self.tab == Tab::Shell {
+        // the Icosphere tab and the Shell tab share one set of settings
+        if self.tab == Tab::Ico && self.s_set.curve != Curve::Icosphere {
+            self.s_prev_curve = self.s_set.curve;
+            self.s_set.curve = Curve::Icosphere;
+        } else if self.tab == Tab::Shell && self.s_set.curve == Curve::Icosphere {
+            self.s_set.curve = self.s_prev_curve;
+        }
+        if matches!(self.tab, Tab::Shell | Tab::Ico) {
             let s = self.shell_settings();
             let key = format!("{s:?}");
             if key != self.s_key {
@@ -352,7 +359,7 @@ impl App {
 
     /// Full gap / overlap check before anything leaves the program.
     fn checked_bytes(&mut self) -> Option<(Vec<u8>, usize)> {
-        if self.tab == Tab::Shell {
+        if matches!(self.tab, Tab::Shell | Tab::Ico) {
             return self.shell_bytes();
         }
         if self.tab == Tab::Cone {
@@ -596,9 +603,9 @@ impl eframe::App for App {
                             ui.label(bold("Circle Generator", 26.0).color(Color32::WHITE));
                             ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).color(Color32::from_rgb(0x8f, 0xa2, 0xc2)));
                         });
-                        ui.label(bold("Smooth circles, cones and curved shells, saved as Brickadia prefabs.", 13.0).color(SOFT));
+                        ui.label(bold("Smooth circles, cones, curved shells and icospheres, saved as Brickadia prefabs.", 13.0).color(SOFT));
                         ui.add_space(4.0);
-                        if seg(ui, &mut self.tab, &[(Tab::Circle, "◯ Circle"), (Tab::Cone, "△ Cone"), (Tab::Shell, "◠ Shell")]) && !self.name_edited {
+                        if seg(ui, &mut self.tab, &[(Tab::Circle, "◯ Circle"), (Tab::Cone, "△ Cone"), (Tab::Shell, "◠ Shell"), (Tab::Ico, "⬡ Icosphere")]) && !self.name_edited {
                             self.key.clear();
                             self.c_key.clear();
                             self.s_key.clear();
@@ -672,7 +679,7 @@ impl eframe::App for App {
 
 impl App {
     fn controls(&mut self, ui: &mut egui::Ui) {
-        if self.tab == Tab::Shell {
+        if matches!(self.tab, Tab::Shell | Tab::Ico) {
             self.shell_controls(ui);
             return;
         }
@@ -861,7 +868,7 @@ impl App {
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
-        if self.tab == Tab::Shell {
+        if matches!(self.tab, Tab::Shell | Tab::Ico) {
             self.shell_preview(ui);
             return;
         }
@@ -1353,7 +1360,11 @@ impl App {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 label(ui, "Shape");
-                seg(ui, &mut self.s_set.curve, &[(Curve::Cone, "Cone"), (Curve::Dish, "Dish"), (Curve::Sphere, "Sphere"), (Curve::Custom, "Custom"), (Curve::Icosphere, "Icosphere")]);
+                if self.s_set.curve == Curve::Icosphere {
+                    ui.label(bold("Icosphere", 15.0).color(Color32::WHITE));
+                } else {
+                    seg(ui, &mut self.s_set.curve, &[(Curve::Cone, "Cone"), (Curve::Dish, "Dish"), (Curve::Sphere, "Sphere"), (Curve::Custom, "Custom")]);
+                }
             });
             let s = &mut self.s_set;
             match s.curve {
