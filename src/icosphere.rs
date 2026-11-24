@@ -39,7 +39,10 @@ fn unit(a: V3) -> V3 {
 }
 const I3: M = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-pub const MAX_DETAIL: u32 = 6;
+/// highest detail level (20 x 30 x 30 = 18,000 faces)
+pub const MAX_DETAIL: u32 = 30;
+/// largest diameter offered (studs); bigger spheres only fail if a face needs a brick longer than the game allows
+pub const MAX_DIAMETER: f64 = 100_000.0;
 
 pub fn face_count(detail: u32) -> usize {
     20 * (detail * detail) as usize
@@ -124,7 +127,11 @@ fn sphere_gap(shapes: &[Vec<Split>], d: f64, step_studs: f64) -> f64 {
     for opts in shapes {
         let best = opts
             .iter()
-            .map(|sp| fit_split(Split { p: sp.p * r, q: sp.q * r, h: sp.h * r }, step_studs).4)
+            .map(|sp| {
+                let f = fit_split(Split { p: sp.p * r, q: sp.q * r, h: sp.h * r }, step_studs);
+                // a face too small for one brick can't be built at all
+                if f.0 < step_studs - 1e-9 || f.1 < step_studs - 1e-9 || f.2 < step_studs - 1e-9 { f64::MAX } else { f.4 }
+            })
             .fold(f64::MAX, f64::min);
         worst = worst.max(best);
     }
@@ -150,9 +157,13 @@ pub fn best_sizes(detail: u32, brick: IcoBrick, lo: f64, hi: f64, count: usize) 
     let step = if brick == IcoBrick::Side { 1.0 } else { 0.2 };
     let mut all: Vec<(f64, f64)> = vec![];
     let mut d = lo;
+    let inc = if detail > 10 { 0.05 } else { 0.02 };
     while d <= hi {
-        all.push((d, sphere_gap(&shapes, d, step)));
-        d += 0.02;
+        let g = sphere_gap(&shapes, d, step);
+        if g < f64::MAX {
+            all.push((d, g));
+        }
+        d += inc;
     }
     all.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let mut out: Vec<(f64, f64)> = vec![];
@@ -176,10 +187,10 @@ pub fn current_gap(s: &ShellSettings) -> f64 {
 
 pub fn build_icosphere(s: &ShellSettings) -> Result<ShellResult, String> {
     if !(1..=MAX_DETAIL).contains(&s.ico_detail) {
-        return Err("Detail must be between 20 and 720 faces.".into());
+        return Err(format!("Detail must be between 20 and {} faces.", face_count(MAX_DETAIL)));
     }
-    if !(s.ico_diameter >= 2.0 && s.ico_diameter <= 4000.0) {
-        return Err("The diameter must be between 2 and 4000 studs.".into());
+    if !(s.ico_diameter >= 2.0 && s.ico_diameter <= MAX_DIAMETER) {
+        return Err(format!("The diameter must be between 2 and {} studs.", MAX_DIAMETER));
     }
     if s.colours.is_empty() {
         return Err("Pick at least one colour.".into());
@@ -207,10 +218,13 @@ pub fn build_icosphere(s: &ShellSettings) -> Result<ShellResult, String> {
     let mut worst_gap: f64 = 0.0;
 
     if hubbed {
-        let lowest = -n; // bearing stack centred on the middle of the sphere
-        let mut hb = vec![Pb { kind: Kind::Micro, size: (3, 3, 1), pos: (0, 0, lowest - 2), ori: 16 }];
+        // the face bearings sit in a small block in the middle (a tall column would poke out of small spheres)
+        let side = (n as f64).cbrt().ceil() as i32;
+        let lowest = -side; // block centred on the middle of the sphere
+        let mut hb = vec![Pb { kind: Kind::Micro, size: (side + 1, side + 1, 1), pos: (0, 0, lowest - 2), ori: 16 }];
         for k in 0..n {
-            hb.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (0, 0, lowest + 2 * k), ori: 16 });
+            let (ix, iy, iz) = (k % side, (k / side) % side, k / (side * side));
+            hb.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (-side + 1 + 2 * ix, -side + 1 + 2 * iy, lowest + 1 + 2 * iz), ori: 16 });
         }
         let mut hub = Panel {
             ring: 0,
@@ -268,6 +282,12 @@ pub fn build_icosphere(s: &ShellSettings) -> Result<ShellResult, String> {
         let y = unit(sub(a, foot));
         let z = cross(x, y);
         let (pi, qi, hi) = (pf.round() as i32, qf.round() as i32, hf.round() as i32);
+        if pi.max(qi).max(hi) / 2 > 4000 {
+            return Err(format!(
+                "At {} studs the faces need bricks longer than the game allows (800 studs). Add more faces or make it smaller.",
+                s.ico_diameter
+            ));
+        }
         // two right-angled wedges, outer face on the true plane (z = 0), body inward
         let bricks = vec![
             Pb { kind, size: (hi / 2, pi / 2, half_t), pos: (-pi / 2, hi / 2, -half_t), ori: 16 + 1 },

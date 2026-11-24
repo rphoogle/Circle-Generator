@@ -90,10 +90,10 @@ fn main() {
         }
     }
     // icospheres: every detail, both bricks, all movements, a spread of sizes
-    for detail in 1..=circlegen::icosphere::MAX_DETAIL {
+    for detail in [1u32, 2, 3, 4, 5, 6, 8, 12] {
         for brick in [IcoBrick::Micro, IcoBrick::Side] {
             for movement in [Movement::Frozen, Movement::Spin, Movement::Free] {
-                for d in [6.0, 20.0, 71.2, 150.0, 317.2, 1000.0, 1244.98] {
+                for d in [6.0, 20.0, 71.2, 150.0, 317.2, 1000.0, 1244.98, 9000.0] {
                     let s = ShellSettings { curve: Curve::Icosphere, ico_detail: detail, ico_brick: brick, movement, ico_diameter: d, thickness: 2, ..ShellSettings::default() };
                     n += 1;
                     match build_shell(&s) {

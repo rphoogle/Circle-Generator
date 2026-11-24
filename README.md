@@ -6,7 +6,7 @@ prefabs (.brz). Built on [brdb](https://github.com/brickadia-community/brdb).
 - **Circle** – full / half / quarter circles and ovals; solid, hollow, doughnut and inverse (round holes); micro bricks or studs (Default, Tile, Smooth).
 - **Cone** – sloped circles and ovals, funnels, sloped doughnuts, cone-shaped holes.
 - **Shell** – domes, parabolic dishes, spheres and custom outlines (curve editor), built from flat entity panels, optionally on bearing hinges.
-- **Icosphere** – geodesic spheres (20–720 faces) in micro wedges or Side Wedges, with best-fit sizes; frozen or on bearings.
+- **Icosphere** – geodesic spheres (20–18,000 faces) in micro wedges or Side Wedges, with best-fit sizes; frozen or on bearings.
 
 ## Download
 Get the latest **CircleGenerator.exe** from the

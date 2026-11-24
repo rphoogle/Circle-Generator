@@ -1654,8 +1654,9 @@ impl App {
     fn ico_controls(&mut self, ui: &mut egui::Ui) {
         let s = &mut self.s_set;
         ui.horizontal(|ui| {
-            label(ui, "Faces");
-            seg(ui, &mut s.ico_detail, &[(1, "20"), (2, "80"), (3, "180"), (4, "320"), (5, "500"), (6, "720")]);
+            label(ui, "Detail");
+            ui.add(egui::Slider::new(&mut s.ico_detail, 1..=icosphere::MAX_DETAIL).show_value(true));
+            ui.label(bold(format!("{} faces", icosphere::face_count(s.ico_detail)), 13.5).color(Color32::WHITE));
         });
         ui.horizontal(|ui| {
             label(ui, "Bricks");
@@ -1663,12 +1664,12 @@ impl App {
         });
         ui.horizontal(|ui| {
             label(ui, "Diameter");
-            ui.add(egui::DragValue::new(&mut s.ico_diameter).range(2.0..=4000.0).speed(0.1).fixed_decimals(2).suffix(" studs"));
+            ui.add(egui::DragValue::new(&mut s.ico_diameter).range(2.0..=icosphere::MAX_DIAMETER).speed(0.5).fixed_decimals(2).suffix(" studs"));
         });
         // best sizes for this detail and brick (cached)
         let key = (s.ico_detail, s.ico_brick);
         if self.s_best.as_ref().map(|b| b.0) != Some(key) {
-            self.s_best = Some((key, icosphere::best_sizes(key.0, key.1, 10.0, 1500.0, 8)));
+            self.s_best = Some((key, icosphere::best_sizes(key.0, key.1, 10.0, 5000.0, 8)));
         }
         if let Some((_, list)) = &self.s_best {
             ui.label(RichText::new("Best sizes (click to use). Gap = worst gap at a corner; nothing ever sticks past an edge:").size(12.0).color(SOFT));
