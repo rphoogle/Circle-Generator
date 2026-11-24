@@ -3,9 +3,14 @@ name: Build Windows .exe
 # Runs on every push, and can be started by hand from the Actions tab
 # ("Run workflow"). The finished CircleGenerator.exe appears as a download
 # at the bottom of the run's page under "Artifacts".
+# Pushing a version tag (e.g. v0.5.1) also publishes a public Release
+# with the .exe attached, so anyone can download it without an account.
 on:
   push:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -26,3 +31,11 @@ jobs:
         with:
           name: CircleGenerator-windows
           path: target/release/CircleGenerator.exe
+      - name: Publish a Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path target/release/CircleGenerator.exe -DestinationPath "CircleGenerator-${{ github.ref_name }}-windows.zip"
+          gh release create "${{ github.ref_name }}" "CircleGenerator-${{ github.ref_name }}-windows.zip" target/release/CircleGenerator.exe --title "Circle Generator ${{ github.ref_name }}" --notes-file docs/RELEASE_NOTES.md
