@@ -1323,11 +1323,7 @@ impl App {
                     icosphere::face_count(s.ico_detail),
                     fmt_num(s.ico_diameter),
                     if s.ico_brick == IcoBrick::Side { "SideWedges" } else { "MicroWedges" },
-                    match s.movement {
-                        Movement::Frozen => "",
-                        Movement::Spin => "_Spin",
-                        Movement::Free => "_Free",
-                    }
+                    if s.movement == Movement::Frozen { "_NoBearings" } else { "" }
                 );
             }
         };
@@ -1694,18 +1690,17 @@ impl App {
             let nt = format!("M = {}", studs(s.thickness as f64 / 5.0));
             size_row(ui, "Thickness", &mut s.thickness, 1, 20, 40, nt, true);
         }
-        ui.horizontal(|ui| {
-            label(ui, "Movement");
-            seg(ui, &mut s.movement, &[(Movement::Frozen, "Frozen"), (Movement::Spin, "Spin"), (Movement::Free, "Free to roll")]);
-        });
-        let hint = match s.movement {
-            Movement::Frozen => "No bearings: every face pasted frozen in place.",
-            Movement::Spin => "A hub in the middle holds every face; the hub sits on one visible bearing on the ground. Change that bearing's angle to turn the whole ball.",
-            Movement::Free => "Same hub, not attached to anything. Unfreeze it and it rolls as one ball.",
-        };
-        ui.label(RichText::new(hint).size(12.0).color(SOFT));
-        if s.movement != Movement::Frozen {
+        // same as the other tools: frozen, or held by bearings
+        let mut bearings = s.movement != Movement::Frozen;
+        ui.checkbox(&mut bearings, bold("Bearings (every face held from a hub on one ground bearing)", 13.5));
+        s.movement = if bearings { Movement::Spin } else { Movement::Frozen };
+        ui.add_enabled_ui(bearings, |ui| {
             ui.checkbox(&mut s.hide_bearings, "Hide the face bearings (invisible, no collision)");
+        });
+        if bearings {
+            ui.label(RichText::new("Turn the ground bearing to turn the whole ball.").size(12.0).color(SOFT));
+        } else {
+            ui.label(RichText::new("⚠ Without bearings the faces paste frozen and won't hold together if unfrozen.").size(12.0).color(WARN));
         }
     }
 

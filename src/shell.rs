@@ -168,7 +168,7 @@ impl Default for ShellSettings {
             ico_diameter: 71.2,
             ico_plates: 1,
             ico_two_tone: false,
-            movement: Movement::Frozen,
+            movement: Movement::Spin,
             strips: 24,
             rings: 8,
             spacing: Spacing::EqualLength,
