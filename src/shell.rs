@@ -24,6 +24,7 @@ use brdb::{
 pub const BEARING: &str = "B_Joint_RigidBearing_Micro";
 pub const MICRO_BRICK: &str = "PB_DefaultMicroBrick";
 pub const MICRO_WEDGE: &str = "PB_DefaultMicroWedge";
+pub const SIDE_WEDGE: &str = "PB_DefaultSideWedge";
 const MAX_HALF: i32 = 4000;
 
 // ------------------------------------------------------------------ settings
@@ -222,6 +223,16 @@ const IDENT: M = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 /// Hinge bearing orientation (Y+, rotation 0): local x -> +Z, y -> +X, z (axis) -> +Y.
 /// Measured from the user's dome.
 pub const D_HINGE: M = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+/// Bearing orientation X+, rotation 0 (byte 0): x -> +Z, y -> -Y, z (axis) -> +X. Measured from the balloon.
+pub const D_XPOS: M = [[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
+/// The rotation for a bearing orientation byte (only the measured ones).
+pub fn d_of(ori: u8) -> M {
+    match ori {
+        8 => D_HINGE,
+        0 => D_XPOS,
+        _ => IDENT,
+    }
+}
 
 pub fn quat_from(m: &M) -> [f64; 4] {
     // returns x, y, z, w
@@ -277,7 +288,7 @@ pub fn joint_child(parent: (V, M), pos: V, d: &M, angle: f64, off: V, q: &M) -> 
 }
 
 /// The joint offset / rotation that puts the child exactly at `child`.
-fn joint_for(parent: (V, M), pos: V, d: &M, angle: f64, child: (V, M)) -> (V, M) {
+pub fn joint_for(parent: (V, M), pos: V, d: &M, angle: f64, child: (V, M)) -> (V, M) {
     let f = mm(d, &rz(-angle));
     let ft = tr(&f);
     let q = mm(&mm(&ft, &tr(&parent.1)), &child.1);
@@ -490,6 +501,7 @@ pub fn ring_points(s: &ShellSettings, line: &[(f64, f64)]) -> (Vec<(f64, f64)>, 
 pub enum Kind {
     Micro,
     Wedge,
+    SideWedge,
     Bearing,
 }
 
@@ -887,7 +899,7 @@ pub fn check_shell(r: &ShellResult) -> ShellCheck {
                 Holder::Panel(i) => {
                     let q = &r.panels[i];
                     match q.bricks.iter().find(|b| b.kind == Kind::Bearing) {
-                        Some(b) => ((q.loc, q.rot), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], D_HINGE),
+                        Some(b) => ((q.loc, q.rot), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], d_of(b.ori)),
                         None => {
                             c.missing_bearings += 1;
                             continue;
@@ -978,7 +990,11 @@ pub fn shell_world(s: &ShellSettings, r: &ShellResult, name: &str) -> World {
         let asset = match b.kind {
             Kind::Bearing => BrickType::Basic(brdb::BString::str(BEARING)),
             k => BrickType::Procedural {
-                asset: brdb::BString::str(if k == Kind::Wedge { MICRO_WEDGE } else { MICRO_BRICK }),
+                asset: brdb::BString::str(match k {
+                    Kind::Wedge => MICRO_WEDGE,
+                    Kind::SideWedge => SIDE_WEDGE,
+                    _ => MICRO_BRICK,
+                }),
                 size: BrickSize { x: b.size.0 as u16, y: b.size.1 as u16, z: b.size.2 as u16 },
             },
         };
