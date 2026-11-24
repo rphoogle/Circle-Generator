@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "circle-generator"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "brdb",
  "clipboard-win",

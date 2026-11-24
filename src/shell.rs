@@ -35,6 +35,24 @@ pub enum Curve {
     Dish,
     Sphere,
     Custom,
+    Icosphere,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IcoBrick {
+    Micro,
+    Side,
+}
+
+/// How an icosphere is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Movement {
+    /// every face frozen, no bearings
+    Frozen,
+    /// a hub in the middle holds every face; the hub sits on one ground bearing (turns on the upright axis)
+    Spin,
+    /// same hub, not attached to anything: unfreeze to roll
+    Free,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +116,19 @@ pub struct ShellSettings {
     /// custom outline points (radius, height) in micro bricks, from the end
     /// where the strips meet
     pub points: Vec<(f64, f64)>,
+    /// which custom points are sharp corners (same length as `points`)
+    pub sharp: Vec<bool>,
     pub upside_down: bool,
+    // icosphere
+    /// geodesic frequency 1..=6 (20 x f x f faces)
+    pub ico_detail: u32,
+    pub ico_brick: IcoBrick,
+    /// diameter in studs
+    pub ico_diameter: f64,
+    /// Side Wedge thickness in plates
+    pub ico_plates: i32,
+    pub ico_two_tone: bool,
+    pub movement: Movement,
     pub strips: u32,
     pub rings: u32,
     pub spacing: Spacing,
@@ -131,7 +161,14 @@ impl Default for ShellSettings {
             cap_radius: 150,
             cap_depth: 60,
             points: balloon_points(),
+            sharp: vec![false; balloon_points().len()],
             upside_down: false,
+            ico_detail: 2,
+            ico_brick: IcoBrick::Side,
+            ico_diameter: 71.2,
+            ico_plates: 1,
+            ico_two_tone: false,
+            movement: Movement::Frozen,
             strips: 24,
             rings: 8,
             spacing: Spacing::EqualLength,
@@ -384,44 +421,25 @@ pub fn outline(s: &ShellSettings) -> Result<Vec<(f64, f64)>, String> {
                     return Err("Two custom points are at the same place.".into());
                 }
             }
-            // centripetal Catmull-Rom through the points
+            // split at sharp corners; each piece is a smooth curve through its points
             let n = pts.len();
+            let mut cuts = vec![0];
+            for i in 1..n - 1 {
+                if s.sharp.get(i).copied().unwrap_or(false) {
+                    cuts.push(i);
+                }
+            }
+            cuts.push(n - 1);
             let per = (N / (n - 1)).max(20);
-            let get = |i: isize| -> (f64, f64) {
-                if i < 0 {
-                    let (a, b) = (pts[0], pts[1]);
-                    (2.0 * a.0 - b.0, 2.0 * a.1 - b.1)
-                } else if i as usize >= n {
-                    let (a, b) = (pts[n - 1], pts[n - 2]);
-                    (2.0 * a.0 - b.0, 2.0 * a.1 - b.1)
-                } else {
-                    pts[i as usize]
-                }
-            };
-            for i in 0..n - 1 {
-                let (p0, p1, p2, p3) = (get(i as isize - 1), get(i as isize), get(i as isize + 1), get(i as isize + 2));
-                let dt = |a: (f64, f64), b: (f64, f64)| (((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()).sqrt().max(1e-6);
-                let t0 = 0.0;
-                let t1 = t0 + dt(p0, p1);
-                let t2 = t1 + dt(p1, p2);
-                let t3 = t2 + dt(p2, p3);
-                for k in 0..per {
-                    let t = t1 + (t2 - t1) * k as f64 / per as f64;
-                    let l = |a: (f64, f64), b: (f64, f64), ta: f64, tb: f64| {
-                        let u = (t - ta) / (tb - ta);
-                        (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u)
-                    };
-                    let a1 = l(p0, p1, t0, t1);
-                    let a2 = l(p1, p2, t1, t2);
-                    let a3 = l(p2, p3, t2, t3);
-                    let b1 = l(a1, a2, t0, t2);
-                    let b2 = l(a2, a3, t1, t3);
-                    let c = l(b1, b2, t1, t2);
-                    p.push((c.0.max(0.0), c.1));
-                }
+            for c in cuts.windows(2) {
+                let part = &pts[c[0]..=c[1]];
+                let mut seg = smooth_through(part, per);
+                seg.pop(); // the next piece starts with this point
+                p.extend(seg);
             }
             p.push(pts[n - 1]);
         }
+        Curve::Icosphere => return Err("internal: icosphere has no outline".into()),
     }
     if s.upside_down {
         for q in &mut p {
@@ -429,6 +447,54 @@ pub fn outline(s: &ShellSettings) -> Result<Vec<(f64, f64)>, String> {
         }
     }
     Ok(p)
+}
+
+/// Centripetal Catmull-Rom curve through `pts` (ends extended straight), `per` samples per gap.
+pub fn smooth_through(pts: &[(f64, f64)], per: usize) -> Vec<(f64, f64)> {
+    let n = pts.len();
+    let mut p = vec![];
+    if n == 2 {
+        for k in 0..=per {
+            let u = k as f64 / per as f64;
+            p.push((pts[0].0 + (pts[1].0 - pts[0].0) * u, pts[0].1 + (pts[1].1 - pts[0].1) * u));
+        }
+        return p;
+    }
+    let get = |i: isize| -> (f64, f64) {
+        if i < 0 {
+            let (a, b) = (pts[0], pts[1]);
+            (2.0 * a.0 - b.0, 2.0 * a.1 - b.1)
+        } else if i as usize >= n {
+            let (a, b) = (pts[n - 1], pts[n - 2]);
+            (2.0 * a.0 - b.0, 2.0 * a.1 - b.1)
+        } else {
+            pts[i as usize]
+        }
+    };
+    for i in 0..n - 1 {
+        let (p0, p1, p2, p3) = (get(i as isize - 1), get(i as isize), get(i as isize + 1), get(i as isize + 2));
+        let dt = |a: (f64, f64), b: (f64, f64)| (((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()).sqrt().max(1e-6);
+        let t0 = 0.0;
+        let t1 = t0 + dt(p0, p1);
+        let t2 = t1 + dt(p1, p2);
+        let t3 = t2 + dt(p2, p3);
+        for k in 0..per {
+            let t = t1 + (t2 - t1) * k as f64 / per as f64;
+            let l = |a: (f64, f64), b: (f64, f64), ta: f64, tb: f64| {
+                let u = (t - ta) / (tb - ta);
+                (a.0 + (b.0 - a.0) * u, a.1 + (b.1 - a.1) * u)
+            };
+            let a1 = l(p0, p1, t0, t1);
+            let a2 = l(p1, p2, t1, t2);
+            let a3 = l(p2, p3, t2, t3);
+            let b1 = l(a1, a2, t0, t2);
+            let b2 = l(a2, a3, t1, t3);
+            let c = l(b1, b2, t1, t2);
+            p.push((c.0.max(0.0), c.1));
+        }
+    }
+    p.push(pts[n - 1]);
+    p
 }
 
 /// Cut the outline into `rings` pieces. Returns the ring edge points and an
@@ -564,6 +630,8 @@ pub struct Panel {
     pub w_out: f64,
     /// how it is held (None when bearings are off)
     pub joint: Option<Joint>,
+    /// the true outline in the entity's own plane (units), for the preview
+    pub shape: Vec<(f64, f64)>,
 }
 
 #[derive(Clone, Debug)]
@@ -577,6 +645,8 @@ pub struct ShellResult {
     pub warnings: Vec<String>,
     /// side the surface's "inside" is on, in each panel's local z (+1 / -1)
     pub inside_sign: f64,
+    /// worst corner gap (units), icosphere only
+    pub gap: f64,
 }
 
 impl ShellResult {
@@ -632,6 +702,9 @@ fn boxb(v: &mut Vec<Pb>, x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32) {
 }
 
 pub fn build_shell(s: &ShellSettings) -> Result<ShellResult, String> {
+    if s.curve == Curve::Icosphere {
+        return crate::icosphere::build_icosphere(s);
+    }
     validate(s)?;
     let line = outline(s)?;
     let (rp, note) = ring_points(s, &line);
@@ -784,6 +857,12 @@ pub fn build_shell(s: &ShellSettings) -> Result<ShellResult, String> {
                 w_in: r.w_in,
                 w_out: r.w_out,
                 joint: None,
+                shape: vec![
+                    (-r.len / 2.0, -r.w_in / 2.0),
+                    (r.len / 2.0, -r.w_out / 2.0),
+                    (r.len / 2.0, r.w_out / 2.0),
+                    (-r.len / 2.0, r.w_in / 2.0),
+                ],
             });
         }
     }
@@ -837,7 +916,7 @@ pub fn build_shell(s: &ShellSettings) -> Result<ShellResult, String> {
     if panels.len() > 3000 {
         warnings.push(format!("{} entities is a lot; the game may be slow with this many.", panels.len()));
     }
-    Ok(ShellResult { panels, main, column, outline: line, rings_at: rp, warnings, inside_sign })
+    Ok(ShellResult { panels, main, column, outline: line, rings_at: rp, warnings, inside_sign, gap: 0.0 })
 }
 
 // ------------------------------------------------------------------ check
@@ -1049,7 +1128,11 @@ pub fn shell_world(s: &ShellSettings, r: &ShellResult, name: &str) -> World {
     let mut column_ids: Vec<usize> = vec![0; r.column.len()];
     for (bi, b) in r.main.iter().enumerate() {
         let mut br = to_brick(b, colour(0), (c[0], c[1], c[2]));
-        if b.kind != Kind::Bearing && s.hide_bearings {
+        if s.curve == Curve::Icosphere {
+            // the spin bearing stays visible so it can be turned in game
+            br.visible = true;
+            br.collision = Default::default();
+        } else if b.kind != Kind::Bearing && s.hide_bearings {
             br.visible = false;
             br.collision = hidden;
         }

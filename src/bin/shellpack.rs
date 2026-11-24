@@ -22,16 +22,28 @@ fn main() {
         ("S09_Dish_EqualAngle_SmoothInside", ShellSettings { dish_radius: 200, dish_depth: 80, strips: 20, rings: 6, spacing: Spacing::EqualAngle, seam: Seam::Inside, ..base.clone() }),
         ("S10_SphereCap_Rim150_Depth60_ColumnInside_BearingsVisible", ShellSettings { curve: Curve::Sphere, sphere_input: SphereInput::RadiusDepth, cap_radius: 150, cap_depth: 60, strips: 18, rings: 5, column_inside: true, hide_bearings: false, ..base.clone() }),
     ];
+    let ico = ShellSettings { curve: Curve::Icosphere, ..base.clone() };
+    let mut list = list;
+    list.extend(vec![
+        ("V01_Icosphere_80faces_71.2studs_SideWedges_Frozen", ShellSettings { ico_detail: 2, ico_diameter: 71.2, ico_brick: IcoBrick::Side, ..ico.clone() }),
+        ("V02_Icosphere_180faces_317.2studs_SideWedges_Spin", ShellSettings { ico_detail: 3, ico_diameter: 317.2, ico_brick: IcoBrick::Side, movement: Movement::Spin, ico_two_tone: true, colours: vec![white, red], ..ico.clone() }),
+        ("V03_Icosphere_720faces_1244.98studs_Micro_Free", ShellSettings { ico_detail: 6, ico_diameter: 1244.98, ico_brick: IcoBrick::Micro, thickness: 2, movement: Movement::Free, colours: vec![[60, 160, 70]], ..ico.clone() }),
+        ("V04_Custom_Vase_SharpBase_16x8", ShellSettings { curve: Curve::Custom, points: vec![(0.0, 0.0), (30.0, 0.0), (40.0, 30.0), (28.0, 70.0), (20.0, 90.0), (26.0, 110.0)], sharp: vec![false, true, false, false, false, false], strips: 16, rings: 8, thickness: 2, ..base.clone() }),
+        ("V05_Custom_Zeppelin_16x20", ShellSettings { curve: Curve::Custom, points: vec![(0., 0.), (16., 6.), (28., 20.), (36., 45.), (40., 80.), (40., 130.), (37., 180.), (30., 225.), (20., 260.), (10., 285.), (0., 300.)], sharp: vec![false; 11], strips: 16, rings: 20, thickness: 2, ..base.clone() }),
+    ]);
+    let only_v = std::env::var("ONLY_V").is_ok();
     for (name, s) in list {
+        if only_v && !name.starts_with('V') { continue; }
         match shell_bytes(&s, name) {
             Ok((r, bytes)) => {
                 std::fs::write(out.join(format!("{name}.brz")), bytes).unwrap();
                 // panel corners for the contact sheet
                 let mut q = String::new();
-                for p in &r.panels {
-                    let h = p.length / 2.0;
+                for p in r.panels.iter().filter(|p| !p.shape.is_empty()) {
                     let k = s.colours[p.colour % s.colours.len()];
-                    for (lx, ly) in [(-h, -p.w_in / 2.0), (h, -p.w_out / 2.0), (h, p.w_out / 2.0), (-h, p.w_in / 2.0)] {
+                    let mut sh = p.shape.clone();
+                    while sh.len() < 4 { sh.push(*sh.last().unwrap()); }
+                    for (lx, ly) in sh {
                         let w = mv(&p.rot, [lx, ly, 0.0]);
                         q += &format!("{:.2} {:.2} {:.2} ", p.loc[0] + w[0], p.loc[1] + w[1], p.loc[2] + w[2]);
                     }

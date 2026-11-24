@@ -75,6 +75,45 @@ fn main() {
             }
         }
     }
+    // custom outlines with sharp corners
+    for (pts, sharp) in [
+        (vec![(0.0, 0.0), (30.0, 0.0), (40.0, 30.0), (28.0, 70.0), (20.0, 90.0), (26.0, 110.0)], vec![false, true, false, false, false, false]),
+        (vec![(10.0, 0.0), (50.0, 20.0), (50.0, 60.0), (10.0, 80.0)], vec![false, true, true, false]),
+    ] {
+        for &(strips, rings) in &[(3u32, 2u32), (12, 8), (24, 16)] {
+            let s = ShellSettings { curve: Curve::Custom, points: pts.clone(), sharp: sharp.clone(), strips, rings, ..ShellSettings::default() };
+            n += 1;
+            match build_shell(&s) {
+                Ok(r) => { if !check_shell(&r).ok() { bad += 1; println!("FAIL sharp custom {strips}x{rings}"); } }
+                Err(e) => { errs += 1; if e.starts_with("internal") { bad += 1; println!("INTERNAL {e}"); } }
+            }
+        }
+    }
+    // icospheres: every detail, both bricks, all movements, a spread of sizes
+    for detail in 1..=circlegen::icosphere::MAX_DETAIL {
+        for brick in [IcoBrick::Micro, IcoBrick::Side] {
+            for movement in [Movement::Frozen, Movement::Spin, Movement::Free] {
+                for d in [6.0, 20.0, 71.2, 150.0, 317.2, 1000.0, 1244.98] {
+                    let s = ShellSettings { curve: Curve::Icosphere, ico_detail: detail, ico_brick: brick, movement, ico_diameter: d, thickness: 2, ..ShellSettings::default() };
+                    n += 1;
+                    match build_shell(&s) {
+                        Ok(r) => {
+                            let c = check_shell(&r);
+                            let step = if brick == IcoBrick::Side { 10.0 } else { 2.0 };
+                            if !c.ok() || r.gap > step * 1.0001 {
+                                bad += 1;
+                                println!("FAIL icosphere {detail} {brick:?} {movement:?} {d}: {c:?} gap {}", r.gap);
+                            }
+                        }
+                        Err(e) => {
+                            errs += 1;
+                            if e.starts_with("internal") { bad += 1; println!("INTERNAL {e}"); }
+                        }
+                    }
+                }
+            }
+        }
+    }
     println!("{n} shells built, {errs} refused with a message, {bad} problems");
     if bad > 0 {
         std::process::exit(1);

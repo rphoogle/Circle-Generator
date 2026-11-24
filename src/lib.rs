@@ -216,6 +216,7 @@ pub fn to_brz_bytes(s: &Settings) -> Result<(Built, Vec<u8>), String> {
 pub mod check;
 pub mod cone;
 pub mod shell;
+pub mod icosphere;
 
 /// Shared limit for other modules.
 pub const MAX_HALF_PUB: i32 = MAX_HALF;
