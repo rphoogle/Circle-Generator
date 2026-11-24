@@ -38,6 +38,9 @@ fn geodesic(f: usize, r: f64) -> Vec<Vec<([V3; 3], bool)>> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+enum Root { Ground, HubSpin, HubFree }
+
+#[derive(Clone, Copy, PartialEq)]
 enum Style { Micro, Side, SideTrim, SideNearest }
 
 fn fl(x: f64, step: f64) -> i32 { ((x / step) + 1e-6).floor() as i32 * step as i32 }
@@ -103,24 +106,44 @@ fn face_bricks(p: f64, q: f64, h: f64, st: Style) -> Vec<Pb> {
 
 fn wrap(a: f64) -> f64 { let mut a = a % 360.0; if a > 180.0 { a -= 360.0 } if a <= -180.0 { a += 360.0 } a }
 
-fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Result<(ShellResult, Vec<f64>), String> {
+fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool, root: Root) -> Result<(ShellResult, Vec<f64>), String> {
     let mut apex: Vec<f64> = vec![];
     let strips = geodesic(f, radius);
     let mut panels: Vec<Panel> = vec![];
     let mut main = vec![];
     let mut column = vec![];
-    if bearings {
-        let n = strips.len() as i32;
-        let lowest = -n; // centred on the middle of the sphere
+    const I3: [[f64; 3]; 3] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+    let hubbed = bearings && root != Root::Ground;
+    let n = if hubbed { strips.iter().map(|s| s.len()).sum::<usize>() as i32 } else { strips.len() as i32 };
+    let lowest = -n; // stack centred on the middle of the sphere
+    if bearings && root == Root::Ground {
         main.push(Pb { kind: Kind::Micro, size: (3, 3, 1), pos: (0, 0, lowest - 2), ori: 16 });
         for k in 0..n { column.push(main.len()); main.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (0, 0, lowest + 2 * k), ori: 16 }); }
     }
+    if bearings && root != Root::Ground {
+        // hub entity in the middle carries the strip bearings, so everything moves as one
+        let mut hb = vec![Pb { kind: Kind::Micro, size: (3, 3, 1), pos: (0, 0, lowest - 2), ori: 16 }];
+        for k in 0..n { hb.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (0, 0, lowest + 2 * k), ori: 16 }); }
+        let mut hub = Panel { ring: 0, strip: 0, loc: [0.0; 3], rot: I3, bricks: hb, colour: 0, length: 0.0, w_in: 0.0, w_out: 0.0, joint: None };
+        apex.push(0.0);
+        if root == Root::HubSpin {
+            // one bearing on the ground under the sphere turns the hub (and the whole sphere) on the upright axis
+            let zb = -(radius.ceil() as i32) - 14;
+            main.push(Pb { kind: Kind::Micro, size: (5, 5, 1), pos: (0, 0, zb - 2), ori: 16 });
+            column.push(main.len());
+            main.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (0, 0, zb), ori: 16 });
+            let (off, q) = joint_for(([0.0; 3], I3), [0.0, 0.0, zb as f64], &d_of(16), 0.0, (hub.loc, hub.rot));
+            hub.joint = Some(Joint { holder: Holder::Column(0), angle: 0.0, off, q });
+        }
+        panels.push(hub);
+    }
+    let use_hub = bearings && root != Root::Ground;
     for (si, strip) in strips.iter().enumerate() {
         let first = panels.len();
         for (k, (tri, corner)) in strip.iter().enumerate() {
             let centroid = sc(add(add(tri[0], tri[1]), tri[2]), 1.0/3.0);
             // base edge: the edge shared with the next face (with bearings), else the longest
-            let next = if bearings { strip.get(k + 1).map(|x| x.0) } else { None };
+            let next = if bearings && root == Root::Ground { strip.get(k + 1).map(|x| x.0) } else { None };
             let mut base: Option<(V3, V3, V3)> = None;
             if let Some(n) = next {
                 for e in 0..3 {
@@ -179,7 +202,12 @@ fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Re
         if bearings {
             for idx in first..panels.len() {
                 let child = (panels[idx].loc, panels[idx].rot);
-                let j = if idx == first {
+                let j = if use_hub {
+                    let k = idx - 1; // every face on its own hub bearing
+                    let b = panels[0].bricks.iter().filter(|b| b.kind == Kind::Bearing).nth(k).copied().unwrap();
+                    let (off, q) = joint_for(([0.0; 3], I3), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], &d_of(16), 0.0, child);
+                    Joint { holder: Holder::PanelK(0, k), angle: 0.0, off, q }
+                } else if idx == first {
                     let b = main[column[si]];
                     let (off, q) = joint_for(([0.0; 3], [[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], &d_of(16), 0.0, child);
                     Joint { holder: Holder::Column(si), angle: 0.0, off, q }
@@ -208,16 +236,18 @@ fn main() {
     let green = [60u8, 160, 70];
     // (name, detail, diameter in studs, style, bearings, two-tone, colours, hide bearings)
     let list = [
-        ("I10_Icosphere_720faces_1245studs_SideWedges", 6, 1244.98, Style::Side, false, false, [white, red], true),
-        ("I11_Icosphere_720faces_1245studs_MicroWedges", 6, 1244.98, Style::Micro, false, false, [white, red], true),
+        ("I12_Icosphere_71studs_80faces_SideWedges_Spin", 2, 71.2, Style::Side, true, true, [white, red], false, Root::HubSpin),
+        ("I13_Icosphere_71studs_80faces_SideWedges_Roll", 2, 71.2, Style::Side, true, true, [white, red], true, Root::HubFree),
+        ("I14_Icosphere_317studs_180faces_SideWedges_Spin", 3, 317.2, Style::Side, true, true, [white, red], false, Root::HubSpin),
     ];
-    for (name, f, d, st, bear, two, cols, hide) in list {
-        let (res, apex) = match build(f, d * 5.0, st, bear, two) { Ok(r) => r, Err(e) => { println!("{name}: ERR {e}"); continue; } };
+    for (name, f, d, st, bear, two, cols, hide, root) in list {
+        let (res, apex) = match build(f, d * 5.0, st, bear, two, root) { Ok(r) => r, Err(e) => { println!("{name}: ERR {e}"); continue; } };
         let chk = check_shell(&res);
         // accuracy in each face's own plane: corners outside the true triangle (clipping)
         // and how far each true corner is from the nearest brick corner (gaps)
         let (mut poke, mut gap) = (0.0f64, 0.0f64);
         for (pi, p) in res.panels.iter().enumerate() {
+            if p.length == 0.0 { continue; } // the hub
             let (pl, ql, h) = (p.w_out, p.w_in - p.w_out, p.length);
             let tri = [(-pl, 0.0), (ql, 0.0), (apex[pi], h)];
             let mut pts: Vec<(f64, f64)> = vec![];

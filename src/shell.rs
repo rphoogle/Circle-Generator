@@ -537,6 +537,8 @@ pub enum Holder {
     Column(usize),
     /// the hinge bearing on panel number i
     Panel(usize),
+    /// bearing number k (in brick order) on panel number i
+    PanelK(usize, usize),
 }
 
 #[derive(Clone, Debug)]
@@ -896,9 +898,10 @@ pub fn check_shell(r: &ShellResult) -> ShellCheck {
                     let b = r.main[bi];
                     (([0.0; 3], IDENT), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], IDENT)
                 }
-                Holder::Panel(i) => {
+                Holder::Panel(i) | Holder::PanelK(i, _) => {
+                    let k = if let Holder::PanelK(_, k) = j.holder { k } else { 0 };
                     let q = &r.panels[i];
-                    match q.bricks.iter().find(|b| b.kind == Kind::Bearing) {
+                    match q.bricks.iter().filter(|b| b.kind == Kind::Bearing).nth(k) {
                         Some(b) => ((q.loc, q.rot), [b.pos.0 as f64, b.pos.1 as f64, b.pos.2 as f64], d_of(b.ori)),
                         None => {
                             c.missing_bearings += 1;
@@ -1027,13 +1030,18 @@ pub fn shell_world(s: &ShellSettings, r: &ShellResult, name: &str) -> World {
     let ns = s.strips as usize;
     // angles each bearing must hold: column bearing k -> ring 0 of strip k,
     // panel i's bearing -> the panel after it in the strip
-    let mut held_angle: Vec<f64> = vec![0.0; r.panels.len()];
+    let mut held_angle: std::collections::HashMap<(usize, usize), f64> = Default::default();
     let mut column_angle: Vec<f64> = vec![0.0; r.column.len()];
     for p in &r.panels {
         if let Some(j) = &p.joint {
             match j.holder {
                 Holder::Column(k) => column_angle[k] = j.angle,
-                Holder::Panel(i) => held_angle[i] = j.angle,
+                Holder::Panel(i) => {
+                    held_angle.insert((i, 0), j.angle);
+                }
+                Holder::PanelK(i, k) => {
+                    held_angle.insert((i, k), j.angle);
+                }
             }
         }
     }
@@ -1055,15 +1063,16 @@ pub fn shell_world(s: &ShellSettings, r: &ShellResult, name: &str) -> World {
     }
     // panels
     let mut ent_ids: Vec<usize> = vec![];
-    let mut hinge_ids: Vec<Option<usize>> = vec![None; r.panels.len()];
+    let mut hinge_ids: Vec<Vec<usize>> = vec![vec![]; r.panels.len()];
     for (pi, p) in r.panels.iter().enumerate() {
         let col = colour(p.colour);
         let mut bricks = vec![];
         for b in &p.bricks {
             let br = to_brick(b, col, (0, 0, 0));
             if b.kind == Kind::Bearing {
-                let (br, id) = bearing_comp(br, held_angle[pi]);
-                hinge_ids[pi] = Some(id);
+                let k = hinge_ids[pi].len();
+                let (br, id) = bearing_comp(br, held_angle.get(&(pi, k)).copied().unwrap_or(0.0));
+                hinge_ids[pi].push(id);
                 bricks.push(br);
             } else {
                 bricks.push(br);
@@ -1091,7 +1100,8 @@ pub fn shell_world(s: &ShellSettings, r: &ShellResult, name: &str) -> World {
         if let Some(j) = &p.joint {
             let bid = match j.holder {
                 Holder::Column(k) => column_ids[k],
-                Holder::Panel(i) => hinge_ids[i].expect("hinge bearing"),
+                Holder::Panel(i) => hinge_ids[i][0],
+                Holder::PanelK(i, k) => hinge_ids[i][k],
             };
             w.add_joint(
                 bid,
