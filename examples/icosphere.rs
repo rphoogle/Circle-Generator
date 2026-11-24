@@ -103,7 +103,8 @@ fn face_bricks(p: f64, q: f64, h: f64, st: Style) -> Vec<Pb> {
 
 fn wrap(a: f64) -> f64 { let mut a = a % 360.0; if a > 180.0 { a -= 360.0 } if a <= -180.0 { a += 360.0 } a }
 
-fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Result<ShellResult, String> {
+fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Result<(ShellResult, Vec<f64>), String> {
+    let mut apex: Vec<f64> = vec![];
     let strips = geodesic(f, radius);
     let mut panels: Vec<Panel> = vec![];
     let mut main = vec![];
@@ -153,14 +154,27 @@ fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Re
             let (p, q, h) = (dot(sub(foot, b), x), dot(sub(c, foot), x), dot(sub(a, foot), y));
             if p <= 0.0 || q <= 0.0 { return Err("a face's corner is not over its base".into()); }
             let mut bricks = face_bricks(p, q, h, st);
+            // slide the (rounded-down) bricks along the base so both base corners get the same gap
+            let step = match st { Style::Micro => 2.0, _ => 10.0 };
+            let shift = if st == Style::Micro || st == Style::Side {
+                let fl = |v: f64| (v / step + 1e-6).floor() * step;
+                let (pf, qf, hf) = (fl(p), fl(q), fl(h));
+                // keep all three brick corners inside the true triangle; take the middle of what's allowed
+                let k = 1.0 - hf / h;
+                let lo = (pf - p).max(-p * k);
+                let hi = (q - qf).min(q * k);
+                if hi >= lo { (lo + hi) / 2.0 } else { 0.0 }
+            } else { 0.0 };
+            let foot_brick = add(foot, sc(x, shift));
+            apex.push(-shift);
             if next.is_some() {
                 // hinge bearing on the outer face, centred on the shared edge: it turns on that edge
                 let xm = ((q - p) / 2.0).round() as i32;
                 bricks.push(Pb { kind: Kind::Bearing, size: (1, 1, 1), pos: (xm, 0, 1), ori: 0 });
             }
             let rot = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]];
-            panels.push(Panel { ring: k, strip: si, loc: foot, rot, bricks, colour: if two_tone && *corner { 1 } else { 0 },
-                length: h, w_in: p + q, w_out: p, joint: None }); // w_out = left leg (test only)
+            panels.push(Panel { ring: k, strip: si, loc: foot_brick, rot, bricks, colour: if two_tone && *corner { 1 } else { 0 },
+                length: h, w_in: p + q, w_out: p + shift, joint: None }); // w_out = left leg from brick origin (test only)
         }
         if bearings {
             for idx in first..panels.len() {
@@ -183,7 +197,7 @@ fn build(f: usize, radius: f64, st: Style, bearings: bool, two_tone: bool) -> Re
             }
         }
     }
-    Ok(ShellResult { panels, main, column, outline: vec![], rings_at: vec![], warnings: vec![], inside_sign: -1.0 })
+    Ok((ShellResult { panels, main, column, outline: vec![], rings_at: vec![], warnings: vec![], inside_sign: -1.0 }, apex))
 }
 
 fn main() {
@@ -194,22 +208,18 @@ fn main() {
     let green = [60u8, 160, 70];
     // (name, detail, diameter in studs, style, bearings, two-tone, colours, hide bearings)
     let list = [
-        ("I04_Icosphere_80studs_500faces_SideWedgesOnly", 5, 80.0, Style::Side, false, false, [white, red], true),
-        ("I05_Icosphere_80studs_500faces_SideWedges_MicroTrim", 5, 80.0, Style::SideTrim, false, false, [white, red], true),
-        ("I06_Icosphere_1000studs_500faces_Green_SideWedges_MicroTrim", 5, 1000.0, Style::SideTrim, false, false, [green, green], true),
-        ("I07_SweetSpot_71studs_80faces_SideWedgesOnly", 2, 71.0, Style::SideNearest, false, true, [white, red], true),
-        ("I08_SweetSpot_267studs_180faces_SideWedgesOnly", 3, 267.0, Style::SideNearest, false, true, [white, red], true),
-        ("I09_Icosphere_80studs_500faces_Micro_Bearings_OuterEdgeHinges", 5, 80.0, Style::Micro, true, true, [white, red], false),
+        ("I10_Icosphere_720faces_1245studs_SideWedges", 6, 1244.98, Style::Side, false, false, [white, red], true),
+        ("I11_Icosphere_720faces_1245studs_MicroWedges", 6, 1244.98, Style::Micro, false, false, [white, red], true),
     ];
     for (name, f, d, st, bear, two, cols, hide) in list {
-        let res = match build(f, d * 5.0, st, bear, two) { Ok(r) => r, Err(e) => { println!("{name}: ERR {e}"); continue; } };
+        let (res, apex) = match build(f, d * 5.0, st, bear, two) { Ok(r) => r, Err(e) => { println!("{name}: ERR {e}"); continue; } };
         let chk = check_shell(&res);
         // accuracy in each face's own plane: corners outside the true triangle (clipping)
         // and how far each true corner is from the nearest brick corner (gaps)
         let (mut poke, mut gap) = (0.0f64, 0.0f64);
-        for p in &res.panels {
+        for (pi, p) in res.panels.iter().enumerate() {
             let (pl, ql, h) = (p.w_out, p.w_in - p.w_out, p.length);
-            let tri = [(-pl, 0.0), (ql, 0.0), (0.0, h)];
+            let tri = [(-pl, 0.0), (ql, 0.0), (apex[pi], h)];
             let mut pts: Vec<(f64, f64)> = vec![];
             for b in &p.bricks {
                 if b.kind == Kind::Bearing { continue; }
